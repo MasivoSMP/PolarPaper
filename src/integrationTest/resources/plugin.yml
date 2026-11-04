@@ -1,0 +1,6 @@
+name: PolarEphemeralTest
+version: '1.0'
+main: live.minehub.polarpaper.integration.EphemeralIntegrationPlugin
+api-version: '26.1.2'
+depend: [polarpaper]
+description: Destructive lifecycle tests; disposable Paper servers only

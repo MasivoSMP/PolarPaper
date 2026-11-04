@@ -25,6 +25,29 @@ import org.bukkit.util.Vector;
 @SuppressWarnings("unused")
 public class PolarListener implements Listener {
 
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onEphemeralUnload(WorldUnloadEvent event) {
+        if (EphemeralWorlds.isEphemeral(event.getWorld()) &&
+                !live.minehub.polarpaper.core.ephemeral.PaperEphemeralChunks.isUnloading(event.getWorld())) {
+            // Bukkit.unloadWorld swallows IO closure errors. Only our checked path may destroy these worlds.
+            event.setCancelled(true);
+            PolarPaper.getPlugin().getLogger().warning("Use Polar.destroyWorld for ephemeral worlds, not Bukkit.unloadWorld");
+        }
+    }
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST)
+    public void onEphemeralChunkUnload(org.bukkit.event.world.ChunkUnloadEvent event) {
+        if (EphemeralWorlds.isEphemeral(event.getWorld())) event.setSaveChunk(false);
+    }
+
+    @EventHandler(priority = org.bukkit.event.EventPriority.MONITOR)
+    public void onEphemeralChunkLoad(org.bukkit.event.world.ChunkLoadEvent event) {
+        if (!EphemeralWorlds.isEphemeral(event.getWorld())) return;
+        var level = ((org.bukkit.craftbukkit.CraftWorld) event.getWorld()).getHandle();
+        var holder = level.moonrise$getChunkTaskScheduler().chunkHolderManager.getChunkHolder(event.getChunk().getX(), event.getChunk().getZ());
+        if (holder != null && holder.getCurrentChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk) chunk.mustNotSave = true;
+    }
+
     @EventHandler(ignoreCancelled = true)
     public void onBlockFade(BlockFadeEvent event) { // coral death
         PolarGenerator generator = PolarGenerator.fromWorld(event.getBlock().getWorld());

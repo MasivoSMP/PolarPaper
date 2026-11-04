@@ -52,6 +52,11 @@ public class SaveCommand extends PolarCmd {
             return CompletableFuture.completedFuture(false);
         }
 
+        if (polarGenerator.getConfig().ephemeral()) {
+            sender.sendMessage(Component.text("Ephemeral worlds cannot be saved or exported", NamedTextColor.RED));
+            return CompletableFuture.completedFuture(false);
+        }
+
         sender.sendMessage(
                 Component.text()
                         .append(Component.text("Saving '", NamedTextColor.GRAY))
@@ -81,7 +86,7 @@ public class SaveCommand extends PolarCmd {
             String errorMsg = String.format("Failed to save '%s'. Check the console for details.", bukkitWorld.getKey().getKey());
             LOGGER.error(errorMsg, e);
             sender.sendMessage(Component.text(errorMsg, NamedTextColor.RED));
-            return null;
+            return false;
         });
     }
 

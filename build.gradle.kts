@@ -71,6 +71,34 @@ tasks.named("build") {
     dependsOn(tasks.named("shadowJar"))
 }
 
+// Opt-in test plugin: run only on a disposable Paper server, never a production server.
+val compileEphemeralTestPlugin = tasks.register<JavaCompile>("compileEphemeralTestPlugin") {
+    source(fileTree("src/integrationTest/java"))
+    classpath = sourceSets.main.get().output + sourceSets.main.get().compileClasspath
+    destinationDirectory.set(layout.buildDirectory.dir("classes/ephemeralTestPlugin"))
+    options.release.set(25)
+}
+
+val compileCanvasEphemeralTestPlugin = tasks.register<JavaCompile>("compileCanvasEphemeralTestPlugin") {
+    source(fileTree("src/canvasIntegrationTest/java"))
+    classpath = sourceSets.main.get().compileClasspath + sourceSets.main.get().output
+    destinationDirectory.set(layout.buildDirectory.dir("classes/canvasEphemeralTestPlugin"))
+    options.release.set(25)
+}
+
+tasks.register<Jar>("canvasEphemeralTestPlugin") {
+    archiveFileName.set("PolarCanvasEphemeralTest.jar")
+    from(compileCanvasEphemeralTestPlugin)
+    from("src/canvasIntegrationTest/resources")
+}
+
+tasks.register<Jar>("ephemeralTestPlugin") {
+    archiveBaseName.set("PolarEphemeralTest")
+    archiveVersion.set("")
+    from(compileEphemeralTestPlugin)
+    from("src/integrationTest/resources")
+}
+
 publishing {
     repositories {
         // Publish to Maven Local only if not running in an action environment
@@ -113,7 +141,7 @@ paperPluginYaml {
     authors = listOf("emortaldev")
     website = "https://github.com/MinehubMC/PolarPaper"
     description = "Polar world format for Paper"
-    apiVersion = libs.versions.minecraft.get()
+    apiVersion = "26.1.2" // Minimum ephemeral target; also permits loading on Canvas/Paper 26.2.
 
     foliaSupported = true
 

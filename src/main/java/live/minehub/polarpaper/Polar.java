@@ -155,6 +155,10 @@ public class Polar {
      * @see BytesPolarSource
      */
     public static CompletableFuture<@Nullable World> createWorld(@Nullable PolarSource source, String worldName, Config config, PolarWorldAccess worldAccess, PolarDataConverter dataConverter) {
+        if (config.ephemeral()) {
+            if (source != null) return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot load a source"));
+            return createEphemeralWorld(worldName, config);
+        }
         EntitySerializer entitySerializer = VersionUtil.getEntitySerializer();
         Format detectedFormat = source == null ? Format.POLAR_FORMAT : Format.detectFormat(source);
         if (detectedFormat == null) {
@@ -174,6 +178,7 @@ public class Polar {
      * @return CompletableFuture with the created bukkit world (completes immediately if not async)
      */
     public static CompletableFuture<@Nullable World> createWorld(PolarWorld polarWorld, String worldName, Config config, PolarWorldAccess worldAccess, PolarDataConverter dataConverter) {
+        if (config.ephemeral()) return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds must start empty, without a PolarWorld"));
         PolarGenerator loader = new PolarWorldLoader(config, polarWorld, worldAccess);
         return createWorld(loader, worldName);
     }
@@ -188,6 +193,12 @@ public class Polar {
      * @see PolarStreamLoader
      */
     public static CompletableFuture<@Nullable World> createWorld(PolarGenerator generator, String worldName) {
+        if (generator.getConfig().ephemeral()) {
+            if (!(generator instanceof live.minehub.polarpaper.core.ephemeral.EphemeralGenerator)) {
+                return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot use a source or custom loader"));
+            }
+            return createEphemeralWorld(worldName, generator.getConfig());
+        }
         worldName = worldName.toLowerCase().replace(" ", "_");
 
         NamespacedKey worldKey = NamespacedKey.fromString(worldName, PolarPaper.getPlugin());
@@ -256,6 +267,7 @@ public class Polar {
     }
 
     public static void startAutoSaveTask(World world, int autosaveIntervalTicks, boolean announceAutosave) {
+        if (EphemeralWorlds.isEphemeral(world) && autosaveIntervalTicks != -1) throw new IllegalArgumentException("Ephemeral worlds cannot autosave");
         stopAutoSaveTask(world.getKey());
 
         if (autosaveIntervalTicks == -1) return;
@@ -308,7 +320,8 @@ public class Polar {
         PolarPaper.getPlugin().reloadConfig();
         FileConfiguration fileConfig = PolarPaper.getPlugin().getConfig();
         Config defaultConfig = Config.getDefaultConfig(fileConfig);
-        Config newConfig = Config.readFromConfig(fileConfig, worldName, defaultConfig.toBuilder()).toBuilder().fromWorld(world).build(); // If world not in config, use defaults
+        Config newConfig = Config.readFromConfig(fileConfig, worldName, defaultConfig.toBuilder()).toBuilder().fromWorld(world)
+                .ephemeral(EphemeralWorlds.isEphemeral(world)).build(); // Preserve the live world's immutable storage mode
 
         Config.writeToConfig(PolarPaper.getConfigPath(), fileConfig, worldName, newConfig);
 
@@ -353,6 +366,7 @@ public class Polar {
      * @see PolarGenerator#getSource()
      */
     public static CompletableFuture<Void> saveWorld(World world) {
+        if (EphemeralWorlds.isEphemeral(world)) return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot be saved"));
         PolarGenerator generator = PolarGenerator.fromWorld(world);
         if (generator == null) return CompletableFuture.completedFuture(null);
         PolarSource source = generator.getSource();
@@ -370,6 +384,7 @@ public class Polar {
      */
     @SuppressWarnings("unused")
     public static CompletableFuture<Void> saveWorld(World world, PolarSource polarSource) {
+        if (EphemeralWorlds.isEphemeral(world)) return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot be saved"));
         PolarGenerator generator = PolarGenerator.fromWorld(world);
         if (generator == null) return CompletableFuture.completedFuture(null);
         Collection<PolarChunk> extraChunks = generator.getPolarWorld() == null ? List.of() : generator.getPolarWorld().chunks();
@@ -391,6 +406,7 @@ public class Polar {
      * @see BlockSelector#ALL
      */
     public static CompletableFuture<Void> saveWorld(World world, Collection<PolarChunk> extraChunks, PolarSource polarSource, PolarWorldAccess polarWorldAccess, BlockSelector blockSelector, Config config) {
+        if (EphemeralWorlds.isEphemeral(world) || config.ephemeral()) return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot be saved or exported"));
         if (Polar.isLoading(world.getKey())) return CompletableFuture.failedFuture(new IllegalStateException(world.getKey() + " is still loading"));
 
         PolarGenerator generator = PolarGenerator.fromWorld(world);
@@ -399,4 +415,23 @@ public class Polar {
         return PolarWriter.convertAndWrite(polarSource, world, polarWorldAccess, config, blockSelector, extraChunks, false, prevWorldUserData);
     }
 
+    /** Creates an empty, non-persistent Paper world. Folia and Canvas are explicitly unsupported. */
+    public static CompletableFuture<World> createEphemeralWorld(String worldName, Config config) {
+        return EphemeralWorlds.create(worldName, config);
+    }
+
+    /** Never loads an absent chunk or removes foreign tickets. Success does not imply immediate GC. */
+    public static CompletableFuture<live.minehub.polarpaper.core.ephemeral.DestroyChunkResult> destroyChunk(World world, int chunkX, int chunkZ) {
+        return EphemeralWorlds.destroyChunk(world, chunkX, chunkZ);
+    }
+
+    /** Partial, non-atomic batch; duplicate coordinates are collapsed. */
+    public static CompletableFuture<live.minehub.polarpaper.core.ephemeral.DestroyChunksResult> destroyChunks(World world, Collection<live.minehub.polarpaper.core.ephemeral.ChunkCoordinates> chunks) {
+        return EphemeralWorlds.destroyChunks(world, chunks);
+    }
+
+    /** Requires players to have left. Unloads without saving, then deletes only the owned instance folder. */
+    public static CompletableFuture<Void> destroyWorld(World world) {
+        return EphemeralWorlds.destroyWorld(world);
+    }
 }

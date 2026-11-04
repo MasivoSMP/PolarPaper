@@ -1,5 +1,6 @@
 # Config for polar worlds
 default:
+  ephemeral: false # Empty RAM-only worlds (Paper 26.x); saving/exporting is forbidden
   autosaveIntervalTicks: -1 # -1 to disable
   announceAutosave: true
   time: 1000

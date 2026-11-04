@@ -57,7 +57,7 @@ public class CreateBlankCommand extends PolarCmd {
             }
 
             PolarGenerator generator = PolarGenerator.fromWorld(world);
-            if (generator != null) generator.setSource(Polar.getDefaultFolderSource(worldName)); // change source to the path so it can be saved/autosaved properly
+            if (generator != null && !generator.getConfig().ephemeral()) generator.setSource(Polar.getDefaultFolderSource(worldName)); // persistent worlds only
 
             ctx.getSource().getSender().sendMessage(
                     Component.text()

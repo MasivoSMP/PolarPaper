@@ -50,6 +50,11 @@ public class SaveZSTDCommand extends PolarCmd {
             return Command.SINGLE_SUCCESS;
         }
 
+        if (polarGenerator.getConfig().ephemeral()) {
+            ctx.getSource().getSender().sendMessage(Component.text("Ephemeral worlds cannot be saved", NamedTextColor.RED));
+            return Command.SINGLE_SUCCESS;
+        }
+
         ctx.getSource().getSender().sendMessage(
                 Component.text()
                         .append(Component.text("Saving '", NamedTextColor.GRAY))

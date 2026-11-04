@@ -50,8 +50,24 @@ public record Config(
         int compressionLevel,
         WorldType worldType,
         World.Environment environment,
-        Map<String, Object> gamerules
+        Map<String, Object> gamerules,
+        boolean ephemeral
 ) {
+
+    public Config {
+        if (ephemeral && (autoSaveIntervalTicks != -1 || saveOnStop)) {
+            throw new IllegalArgumentException("Ephemeral worlds require autosaveIntervalTicks: -1 and saveOnStop: false");
+        }
+    }
+
+    /** Compatibility constructor for persistent Polar worlds. */
+    public Config(int autoSaveIntervalTicks, boolean announceAutosave, long time, boolean saveOnStop,
+                  boolean loadOnStartup, Location spawn, Difficulty difficulty, boolean async, boolean saveLight,
+                  PolarWorld.CompressionType compression, int compressionLevel, WorldType worldType,
+                  World.Environment environment, Map<String, Object> gamerules) {
+        this(autoSaveIntervalTicks, announceAutosave, time, saveOnStop, loadOnStartup, spawn, difficulty,
+                async, saveLight, compression, compressionLevel, worldType, environment, gamerules, false);
+    }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(Config.class);
 
@@ -74,6 +90,7 @@ public record Config(
     }};
 
     private static final List<Property<?>> PROPERTIES = List.of(
+            Property.of("ephemeral", false, Config::ephemeral, Builder::ephemeral, "Empty RAM-only world; saving is forbidden. Paper 26.x only"),
             Property.of("autosaveIntervalTicks", -1, Config::autoSaveIntervalTicks, Builder::autoSaveIntervalTicks, "-1 to disable"),
             Property.of("announceAutosave", true, Config::announceAutosave, Builder::announceAutosave),
             new Property<>("time", 1000L, Config::time, Builder::time, Codec.LONG),
@@ -157,6 +174,7 @@ public record Config(
         private long time;
         private boolean saveOnStop;
         private boolean loadOnStartup;
+        private boolean ephemeral;
         private @Nullable Location spawn;
         private @Nullable Difficulty difficulty;
         private boolean async;
@@ -177,6 +195,7 @@ public record Config(
             this.time = record.time;
             this.saveOnStop = record.saveOnStop;
             this.loadOnStartup = record.loadOnStartup;
+            this.ephemeral = record.ephemeral;
             this.spawn = record.spawn;
             this.difficulty = record.difficulty;
             this.async = record.async;
@@ -246,6 +265,11 @@ public record Config(
          */
         public Builder loadOnStartup(boolean loadOnStartup) {
             this.loadOnStartup = loadOnStartup;
+            return this;
+        }
+
+        public Builder ephemeral(boolean ephemeral) {
+            this.ephemeral = ephemeral;
             return this;
         }
 
@@ -324,7 +348,7 @@ public record Config(
         public Config build() {
             return new Config(this.autoSaveIntervalTicks, this.announceAutosave, this.time, this.saveOnStop, this.loadOnStartup,
                     Objects.requireNonNull(this.spawn, "spawn"), Objects.requireNonNull(this.difficulty, "difficulty"), this.async, this.saveLight, Objects.requireNonNull(this.compression, "compression"), this.compressionLevel,
-                    Objects.requireNonNull(this.worldType, "worldType"), Objects.requireNonNull(this.environment, "environment"), this.gamerules);
+                    Objects.requireNonNull(this.worldType, "worldType"), Objects.requireNonNull(this.environment, "environment"), this.gamerules, this.ephemeral);
         }
 
         public static Builder defaults() {

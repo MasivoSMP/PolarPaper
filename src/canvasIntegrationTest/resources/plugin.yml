@@ -1,0 +1,6 @@
+name: PolarCanvasEphemeralTest
+version: '1'
+main: live.minehub.polarpaper.integration.CanvasEphemeralIntegrationPlugin
+api-version: '26.2'
+depend: [polarpaper]
+folia-supported: true

@@ -89,6 +89,10 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
         };
 
         final ResourceKey<net.minecraft.world.level.Level> dimensionKey = CraftNamespacedKey.toResourceKey(Registries.DIMENSION, creator.key());
+        if (chunkGenerator instanceof live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) {
+            live.minehub.polarpaper.core.ephemeral.EphemeralStorage.reserve(plugin,
+                    craftServer.getServer().storageSource.getDimensionPath(dimensionKey), creator.key().asString());
+        }
         WorldLoader.DataLoadContext context = craftServer.getServer().worldLoaderContext;
         RegistryAccess.Frozen registryAccess = context.datapackDimensions();
         net.minecraft.core.Registry<LevelStem> contextLevelStemRegistry = registryAccess.lookupOrThrow(Registries.LEVEL_STEM);
@@ -204,6 +208,9 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
                 });
             });
 
+            if (finalChunkGenerator instanceof live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) {
+                live.minehub.polarpaper.core.ephemeral.PaperEphemeralChunks.configure(serverLevel);
+            }
             craftServer.getServer().addLevel(serverLevel); // Paper - Put world into worldlist before initing the world; move up
             craftServer.getServer().initWorld(serverLevel, null);
             // Paper - Put world into worldlist before initing the world; move up
@@ -226,6 +233,11 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
     }
 
     private static class NoSaveLevel extends ServerLevel {
+        @Override
+        public void close() throws java.io.IOException {
+            if (getWorld().getGenerator() instanceof live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) getChunkSource().close(false);
+            else super.close();
+        }
         protected NoSaveLevel(MinecraftServer server, Executor executor, LevelStorageSource.LevelStorageAccess levelStorage, WorldGenSettings worldGenSettings, ResourceKey<Level> dimension, LevelStem levelStem, boolean isDebug, long biomeZoomSeed, List<CustomSpawner> customSpawners, boolean tickTime, ResourceKey<LevelStem> typeKey, World.Environment env, ChunkGenerator gen, BiomeProvider biomeProvider, SavedDataStorage savedDataStorage, PaperWorldLoader.LoadedWorldData loadedWorldData) {
             super(server, executor, levelStorage, worldGenSettings, dimension, levelStem, isDebug, biomeZoomSeed, customSpawners, tickTime, typeKey, env, gen, biomeProvider, savedDataStorage, loadedWorldData);
         }

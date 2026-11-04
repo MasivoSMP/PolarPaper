@@ -41,6 +41,7 @@ public final class PolarPaper extends JavaPlugin {
         registerEvents();
 
         saveDefaultConfig();
+        live.minehub.polarpaper.core.ephemeral.EphemeralStorage.cleanupOrphans(this);
 
         try {
             loadStartupWorlds();
@@ -60,6 +61,9 @@ public final class PolarPaper extends JavaPlugin {
             for (World world : getServer().getWorlds()) {
                 PolarGenerator generator = PolarGenerator.fromWorld(world);
                 if (generator == null) continue;
+                // Server shutdown closes resources later. Leave ownership records for next startup;
+                // never delete an active ephemeral world's directory from onDisable.
+                if (generator.getConfig().ephemeral()) continue;
 
                 Path worldFolderPath = world.getWorldFolder().toPath();
                 if (Files.exists(worldFolderPath)) {
@@ -145,24 +149,42 @@ public final class PolarPaper extends JavaPlugin {
 
     public static void loadStartupWorlds() throws IOException {
         Path worldsFolder = PolarPaper.getWorldsPath();
-
         Files.createDirectories(worldsFolder);
-
+        java.util.List<Path> sources;
         try (var files = Files.walk(worldsFolder, 4, FileVisitOption.FOLLOW_LINKS)) {
-            files.forEach(path -> {
-                if (Files.isDirectory(path) || !Format.isSupported(path)) return;
-
-                String worldName = WorldKey.getWorldName(path);
-
-                Config config = Config.readFromConfig(PolarPaper.getPlugin().getConfig(), worldName);
-
-                if (!config.loadOnStartup()) return;
-
-                PolarPaper.getPlugin().getLogger().info("Loading polar world: " + worldName);
-
-                Polar.createWorld(new FilePolarSource(path), worldName);
-            });
+            sources = files.filter(path -> !Files.isDirectory(path) && Format.isSupported(path)).toList();
         }
+        var sourceNames = sources.stream().map(WorldKey::getWorldName).collect(java.util.stream.Collectors.toSet());
+        var configuredWorlds = PolarPaper.getPlugin().getConfig().getConfigurationSection("worlds");
+        if (configuredWorlds != null) for (String name : configuredWorlds.getKeys(false)) {
+            try {
+                Config config = Config.readFromConfig(PolarPaper.getPlugin().getConfig(), name);
+                if (config.ephemeral() && config.loadOnStartup()) {
+                    if (sourceNames.contains(name.replace(' ', '_').toLowerCase(java.util.Locale.ROOT))) {
+                        throw new IllegalArgumentException("Ephemeral world has an initial source; remove or rename the source first");
+                    }
+                    Polar.createEphemeralWorld(name, config)
+                            .exceptionally(error -> { PolarPaper.getPlugin().getLogger().warning("Cannot create ephemeral world " + name + ": " + error.getMessage()); return null; });
+                }
+            } catch (RuntimeException error) {
+                PolarPaper.getPlugin().getLogger().warning("Invalid world configuration " + name + ": " + error.getMessage());
+            }
+        }
+        sources.forEach(path -> {
+            String worldName = WorldKey.getWorldName(path);
+
+            Config config = Config.readFromConfig(PolarPaper.getPlugin().getConfig(), worldName);
+
+            if (!config.loadOnStartup()) return;
+            if (config.ephemeral()) {
+                PolarPaper.getPlugin().getLogger().warning("Rejected source for ephemeral world " + worldName + "; ephemeral worlds must start empty");
+                return;
+            }
+
+            PolarPaper.getPlugin().getLogger().info("Loading polar world: " + worldName);
+
+            Polar.createWorld(new FilePolarSource(path), worldName);
+        });
     }
 
 }

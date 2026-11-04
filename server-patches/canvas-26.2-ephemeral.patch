@@ -1,0 +1,1422 @@
+diff --git a/canvas-api/src/main/java/io/canvasmc/canvas/WorldUnloadResult.java b/canvas-api/src/main/java/io/canvasmc/canvas/WorldUnloadResult.java
+index fe18efcf..a169a2f4 100644
+--- a/canvas-api/src/main/java/io/canvasmc/canvas/WorldUnloadResult.java
++++ b/canvas-api/src/main/java/io/canvasmc/canvas/WorldUnloadResult.java
+@@ -35,7 +35,13 @@ public enum WorldUnloadResult {
+     /**
+      * World unload failed for some unknown reason
+      */
+-    FAIL_UNKNOWN;
++    FAIL_UNKNOWN,
++    /**
++     * An ephemeral world's native shutdown failed. Resources may still be live and
++     * the world must not be retried or its directory deleted. The server initiates
++     * shutdown to avoid resuming a partially stopped world.
++     */
++    FAIL_RESOURCE_CLOSE;
+ 
+     public boolean isSuccess() {
+         return this == SUCCESS;
+diff --git a/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/ChunkDataController.java.patch b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/ChunkDataController.java.patch
+new file mode 100644
+index 00000000..4b6f20b2
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/ChunkDataController.java.patch
+@@ -0,0 +1,28 @@
++--- a/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/ChunkDataController.java
+++++ b/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/ChunkDataController.java
++@@ -25,21 +_,25 @@
++ 
++     @Override
++     public WriteData startWrite(final int chunkX, final int chunkZ, final CompoundTag compound) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return new WriteData(null, WriteData.WriteResult.DELETE, null, null); // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$startWrite(chunkX, chunkZ, compound);
++     }
++ 
++     @Override
++     public void finishWrite(final int chunkX, final int chunkZ, final WriteData writeData) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return; // Canvas - do not even delete existing files
++         ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$finishWrite(chunkX, chunkZ, writeData);
++     }
++ 
++     @Override
++     public ReadData readData(final int chunkX, final int chunkZ) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return new ReadData(ReadData.ReadResult.NO_DATA, null, null, 0); // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$readData(chunkX, chunkZ);
++     }
++ 
++     @Override
++     public CompoundTag finishRead(final int chunkX, final int chunkZ, final ReadData readData) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return null; // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$finishRead(chunkX, chunkZ, readData);
++     }
++ }
+diff --git a/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/EntityDataController.java.patch b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/EntityDataController.java.patch
+new file mode 100644
+index 00000000..b0cfd12b
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/EntityDataController.java.patch
+@@ -0,0 +1,55 @@
++--- a/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/EntityDataController.java
+++++ b/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/EntityDataController.java
++@@ -14,10 +_,12 @@
++ public final class EntityDataController extends MoonriseRegionFileIO.RegionDataController {
++ 
++     private final EntityRegionFileStorage storage;
+++    private final boolean canvas$ephemeral; // Canvas
++ 
++     public EntityDataController(final EntityRegionFileStorage storage, final ChunkTaskScheduler taskScheduler) {
++         super(MoonriseRegionFileIO.RegionFileType.ENTITY_DATA, taskScheduler.ioExecutor, taskScheduler.compressionExecutor);
++         this.storage = storage;
+++        this.canvas$ephemeral = taskScheduler.world.canvas$isEphemeral(); // Canvas
++     }
++ 
++     @Override
++@@ -27,6 +_,7 @@
++ 
++     @Override
++     public WriteData startWrite(final int chunkX, final int chunkZ, final CompoundTag compound) throws IOException {
+++        if (this.canvas$ephemeral) return new WriteData(null, WriteData.WriteResult.DELETE, null, null); // Canvas
++         checkPosition(new ChunkPos(chunkX, chunkZ), compound);
++ 
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$startWrite(chunkX, chunkZ, compound);
++@@ -34,16 +_,19 @@
++ 
++     @Override
++     public void finishWrite(final int chunkX, final int chunkZ, final WriteData writeData) throws IOException {
+++        if (this.canvas$ephemeral) return; // Canvas
++         ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$finishWrite(chunkX, chunkZ, writeData);
++     }
++ 
++     @Override
++     public ReadData readData(final int chunkX, final int chunkZ) throws IOException {
+++        if (this.canvas$ephemeral) return new ReadData(ReadData.ReadResult.NO_DATA, null, null, 0); // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$readData(chunkX, chunkZ);
++     }
++ 
++     @Override
++     public CompoundTag finishRead(final int chunkX, final int chunkZ, final ReadData readData) throws IOException {
+++        if (this.canvas$ephemeral) return null; // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$finishRead(chunkX, chunkZ, readData);
++     }
++ 
++@@ -62,6 +_,11 @@
++         public EntityRegionFileStorage(final RegionStorageInfo regionStorageInfo, final Path directory,
++                                        final boolean dsync) {
++             super(regionStorageInfo, directory, dsync);
+++        }
+++
+++        public EntityRegionFileStorage(final RegionStorageInfo regionStorageInfo, final Path directory,
+++                                       final boolean dsync, final boolean ephemeral) {
+++            super(regionStorageInfo, directory, dsync, ephemeral);
++         }
++ 
++         @Override
+diff --git a/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/PoiDataController.java.patch b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/PoiDataController.java.patch
+new file mode 100644
+index 00000000..fb9a78ad
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/PoiDataController.java.patch
+@@ -0,0 +1,28 @@
++--- a/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/PoiDataController.java
+++++ b/ca/spottedleaf/moonrise/patches/chunk_system/io/datacontroller/PoiDataController.java
++@@ -25,21 +_,25 @@
++ 
++     @Override
++     public WriteData startWrite(final int chunkX, final int chunkZ, final CompoundTag compound) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return new WriteData(null, WriteData.WriteResult.DELETE, null, null); // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$startWrite(chunkX, chunkZ, compound);
++     }
++ 
++     @Override
++     public void finishWrite(final int chunkX, final int chunkZ, final WriteData writeData) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return; // Canvas
++         ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$finishWrite(chunkX, chunkZ, writeData);
++     }
++ 
++     @Override
++     public ReadData readData(final int chunkX, final int chunkZ) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return new ReadData(ReadData.ReadResult.NO_DATA, null, null, 0); // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$readData(chunkX, chunkZ);
++     }
++ 
++     @Override
++     public CompoundTag finishRead(final int chunkX, final int chunkZ, final ReadData readData) throws IOException {
+++        if (this.world.canvas$isEphemeral()) return null; // Canvas
++         return ((ChunkSystemRegionFileStorage)this.getCache()).moonrise$finishRead(chunkX, chunkZ, readData);
++     }
++ }
+diff --git a/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java.patch b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java.patch
+new file mode 100644
+index 00000000..45f540a5
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java.patch
+@@ -0,0 +1,89 @@
++--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
+++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/ChunkHolderManager.java
++@@ -258,6 +_,7 @@
++         if (first && halt) { // Folia - region threading
++             LOGGER.info("Waiting 60s for chunk system to halt for world '" + WorldUtil.getWorldName(this.world) + "'");
++             if (!this.taskScheduler.halt(true, TimeUnit.SECONDS.toNanos(60L))) {
+++                if (this.world.canvas$isEphemeral()) throw new IllegalStateException("Ephemeral world chunk scheduler did not halt"); // Canvas
++                 LOGGER.warn("Failed to halt generation/loading tasks for world '" + WorldUtil.getWorldName(this.world) + "'");
++             } else {
++                 LOGGER.info("Halted chunk system for world '" + WorldUtil.getWorldName(this.world) + "'");
++@@ -274,21 +_,28 @@
++         if (halt) {
++             LOGGER.info("Waiting 60s for chunk I/O to halt for world '" + WorldUtil.getWorldName(this.world) + "'");
++             if (!this.taskScheduler.haltIO(true, TimeUnit.SECONDS.toNanos(60L))) {
+++                if (this.world.canvas$isEphemeral()) throw new IllegalStateException("Ephemeral world I/O scheduler did not halt"); // Canvas
++                 LOGGER.warn("Failed to halt I/O tasks for world '" + WorldUtil.getWorldName(this.world) + "'");
++             } else {
++                 LOGGER.info("Halted I/O scheduler for world '" + WorldUtil.getWorldName(this.world) + "'");
++             }
++         }
++ 
+++        java.io.UncheckedIOException closeFailure = null; // Canvas - close all caches but never hide failure
++         // kill regionfile cache
++         for (final MoonriseRegionFileIO.RegionFileType type : MoonriseRegionFileIO.RegionFileType.values()) {
++             try {
++                 MoonriseRegionFileIO.getControllerFor(this.world, type).getCache().close();
++             } catch (final IOException ex) {
++                 LOGGER.error("Failed to close '" + type.name() + "' regionfile cache for world '" + WorldUtil.getWorldName(this.world) + "'", ex);
+++                if (this.world.canvas$isEphemeral()) { // Canvas start
+++                    if (closeFailure == null) closeFailure = new java.io.UncheckedIOException(ex);
+++                    else closeFailure.addSuppressed(ex);
+++                } // Canvas end
++             }
++         }
++ 
+++        if (closeFailure != null) throw closeFailure; // Canvas
++         this.taskScheduler.setShutdown(true);
++         } // Folia - region threading
++     }
++@@ -1289,6 +_,49 @@
++         this.getCurrentRegionData().autoSaveQueue.remove(holder); // Folia - region threading
++         PlatformHooks.get().onChunkHolderDelete(this.world, holder.vanillaChunkHolder);
++         this.chunkHolders.remove(CoordinateUtils.getChunkKey(holder.chunkX, holder.chunkZ));
+++    }
+++
+++    /** Native, targeted lifecycle; caller must own this region. No ticket removal or hidden retry. */
+++    public String canvas$destroyEphemeralChunk(final int x, final int z) {
+++        TickThread.ensureTickThread(this.world, x, z, "Ephemeral chunk destruction");
+++        if (!this.world.canvas$isEphemeral()) throw new IllegalArgumentException("Not an ephemeral world");
+++        this.processTicketUpdates();
+++        NewChunkHolder holder;
+++        NewChunkHolder.UnloadState state;
+++        var ticketLock = this.ticketLockArea.lock(x, z);
+++        try {
+++            var schedulingLock = this.taskScheduler.schedulingLockArea.lock(x, z);
+++            try {
+++                holder = this.getChunkHolder(x, z);
+++                if (holder == null) return "ALREADY_ABSENT";
+++                if (holder.isSafeToUnload() != null) return "BLOCKED";
+++                final var entities = holder.getEntityChunk();
+++                if (entities != null) {
+++                    for (final var entity : entities.getAllEntities()) {
+++                        if (!entity.shouldBeSaved()) return "BLOCKED";
+++                    }
+++                }
+++                holder.removeFromUnloadQueue();
+++                this.unloadQueue.removeChunk(x, z);
+++                state = holder.unloadStage1();
+++                if (state == null) {
+++                    this.removeChunkHolder(holder);
+++                    return "DESTROYED";
+++                }
+++            } finally { this.taskScheduler.schedulingLockArea.unlock(schedulingLock); }
+++        } finally { this.ticketLockArea.unlock(ticketLock); }
+++        final Boolean previous = this.blockTicketUpdates();
+++        try { holder.unloadStage2(state); }
+++        finally { this.unblockTicketUpdates(previous); }
+++        ticketLock = this.ticketLockArea.lock(x, z);
+++        try {
+++            var schedulingLock = this.taskScheduler.schedulingLockArea.lock(x, z);
+++            try {
+++                if (!holder.unloadStage3()) return "BLOCKED";
+++                this.removeChunkHolder(holder);
+++                return "DESTROYED";
+++            } finally { this.taskScheduler.schedulingLockArea.unlock(schedulingLock); }
+++        } finally { this.ticketLockArea.unlock(ticketLock); }
++     }
++ 
++     // note: never call while inside the chunk system, this will absolutely break everything
+diff --git a/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java.patch b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java.patch
+new file mode 100644
+index 00000000..d817ebd1
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java.patch
+@@ -0,0 +1,26 @@
++--- a/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
+++++ b/ca/spottedleaf/moonrise/patches/chunk_system/scheduling/NewChunkHolder.java
++@@ -1704,6 +_,7 @@
++     }
++ 
++     private boolean saveChunk(final ChunkAccess chunk, final boolean unloading, final Completable<CompoundTag>[] chunkSave) {
+++        if (this.world.canvas$isEphemeral()) return false; // Canvas - includes dirty ProtoChunks
++         if (!chunk.isUnsaved()) {
++             return false;
++         }
++@@ -1754,6 +_,7 @@
++ 
++     private boolean lastEntitySaveNull;
++     private boolean saveEntities(final ChunkEntitySlices entities, final boolean unloading, final Completable<CompoundTag>[] entitySave) {
+++        if (this.world.canvas$isEphemeral()) return false; // Canvas - keep native unload/completion lifecycle
++         try {
++             if (entities.isTransient()) {
++                 if (!unloading) {
++@@ -1810,6 +_,7 @@
++ 
++     private boolean lastPoiSaveNull;
++     private boolean savePOI(final PoiChunk poi, final boolean unloading, final Completable<CompoundTag>[] poiSave) {
+++        if (this.world.canvas$isEphemeral()) return false; // Canvas - includes POI-only holders
++         try {
++             final CompoundTag save = poi.save();
++             poi.setDirty(false);
+diff --git a/canvas-server/minecraft-patches/sources/io/canvasmc/canvas/threadedregions/WorldShutdownThread.java.patch b/canvas-server/minecraft-patches/sources/io/canvasmc/canvas/threadedregions/WorldShutdownThread.java.patch
+new file mode 100644
+index 00000000..887f9cab
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/io/canvasmc/canvas/threadedregions/WorldShutdownThread.java.patch
+@@ -0,0 +1,50 @@
++--- a/io/canvasmc/canvas/threadedregions/WorldShutdownThread.java
+++++ b/io/canvasmc/canvas/threadedregions/WorldShutdownThread.java
++@@ -25,6 +_,13 @@
++ 
++     private final String debugName;
++     private final ServerLevel level;
+++    private final java.util.concurrent.atomic.AtomicBoolean canvas$callbackCompleted = new java.util.concurrent.atomic.AtomicBoolean();
+++
+++    private void canvas$completeUnload(final io.canvasmc.canvas.WorldUnloadResult result) {
+++        if (this.canvas$callbackCompleted.compareAndSet(false, true)) {
+++            this.level.canvas$unloadTicket.getOrThrow().callback().accept(result);
+++        }
+++    }
++     private final Supplier<List<ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData>>> theWaiter;
++ 
++     public WorldShutdownThread(
++@@ -44,6 +_,13 @@
++ 
++             LOGGER.error("Error shutting down world {}, alerting global tick to shutdown", worldName, thrown);
++             RegionizedServer.getInstance().addTask(MinecraftServer.getServer()::stopServer);
+++            if (level.canvas$isEphemeral()) {
+++                try {
+++                    this.canvas$completeUnload(io.canvasmc.canvas.WorldUnloadResult.FAIL_RESOURCE_CLOSE);
+++                } catch (final Throwable callbackFailure) {
+++                    LOGGER.error("Ephemeral unload failure callback threw", callbackFailure);
+++                }
+++            }
++         });
++ 
++         this.debugName = worldName;
++@@ -172,6 +_,10 @@
++         // so we skip to saving the regions in the world
++ 
++         try {
+++            // No region owns an empty world, but its I/O caches still require checked closure.
+++            if (regions.isEmpty() && this.level.canvas$isEphemeral()) {
+++                this.level.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, true, false, true, false);
+++            }
++             for (int i = 0; i < regions.size(); i++) {
++                 final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData>
++                     region = regions.get(i);
++@@ -197,7 +_,7 @@
++ 
++         LOGGER.info("Completed {} unload", getWorldName());
++ 
++-        this.level.canvas$unloadTicket.getOrThrow().callback().accept(io.canvasmc.canvas.WorldUnloadResult.SUCCESS);
+++        this.canvas$completeUnload(io.canvasmc.canvas.WorldUnloadResult.SUCCESS);
++     }
++ 
++     private static void teleportPlayer(final ServerPlayer entityPlayer, final ServerLocation target) {
+diff --git a/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionShutdownThread.java.patch b/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionShutdownThread.java.patch
+index 69f29be4..df4a3bde 100644
+--- a/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionShutdownThread.java.patch
++++ b/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionShutdownThread.java.patch
+@@ -1,5 +1,29 @@
+ --- a/io/papermc/paper/threadedregions/RegionShutdownThread.java
+ +++ b/io/papermc/paper/threadedregions/RegionShutdownThread.java
++@@ -74,6 +_,7 @@
++             world.saveLevelData(true);
++         } catch (final Throwable thrown) {
++             LOGGER.error("Failed to save level data for {}", world.getWorld().getName(), thrown);
+++            if (world.canvas$isEphemeral()) throw new IllegalStateException("Ephemeral saved-data shutdown failed", thrown); // Canvas
++         }
++     }
++ 
++@@ -122,6 +_,7 @@
++             region.regioniser.world.moonrise$getChunkTaskScheduler().chunkHolderManager.close(true, true, false, last, false);
++         } catch (final Throwable thrown) {
++             LOGGER.error("Failed to save chunks for region around chunk {} in world '{}'", center, region.regioniser.world.getWorld().getName(), thrown);
+++            if (region.regioniser.world.canvas$isEphemeral()) throw new IllegalStateException("Ephemeral region shutdown failed", thrown); // Canvas
++         } finally {
++             this.shuttingDown = null;
++         }
++@@ -132,6 +_,7 @@
++             world.moonrise$getChunkTaskScheduler().chunkHolderManager.close(false, true, true, false, false);
++         } catch (final Throwable thrown) {
++             LOGGER.error("Failed to halt chunk system for world '{}'", world.getWorld().getName(), thrown);
+++            if (world.canvas$isEphemeral()) throw new IllegalStateException("Ephemeral chunk system halt failed", thrown); // Canvas
++         }
++     }
++ 
+ @@ -156,6 +_,7 @@
+                          player.containerMenu.setCarried(ItemStack.EMPTY);
+                          player.drop(carried, false);
+diff --git a/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionizedTaskQueue.java.patch b/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionizedTaskQueue.java.patch
+new file mode 100644
+index 00000000..26214af7
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/RegionizedTaskQueue.java.patch
+@@ -0,0 +1,112 @@
++--- a/io/papermc/paper/threadedregions/RegionizedTaskQueue.java
+++++ b/io/papermc/paper/threadedregions/RegionizedTaskQueue.java
++@@ -21,6 +_,13 @@
++ import net.minecraft.server.level.TicketType;
++ 
++ public final class RegionizedTaskQueue {
+++    /** Dispatch only to an existing region, without tickets, chunk loads or region creation. */
+++    public void queueExistingTickTask(final ServerLevel world, final int chunkX, final int chunkZ,
+++                                      final Runnable run, final Runnable retired) {
+++        final var task = new PrioritisedQueue.ChunkBasedPriorityTask(world.taskQueueRegionData, chunkX, chunkZ, false, run, Priority.NORMAL);
+++        task.retired = retired;
+++        task.queue();
+++    }
++ 
++     private static final TicketType<Long> TASK_QUEUE_TICKET = ChunkSystemTicketType.create("task_queue_ticket", Long::compareTo);
++ 
++@@ -246,6 +_,10 @@
++     }
++ 
++     public static final class RegionTaskQueueData {
+++        public void retireExistingTasks() {
+++            this.tickTaskQueue.retireExistingTasks();
+++            this.chunkQueue.retireExistingTasks();
+++        }
++         private final PrioritisedQueue tickTaskQueue = new PrioritisedQueue(this);
++         private final PrioritisedQueue chunkQueue = new PrioritisedQueue(this);
++         private final WorldRegionTaskData worldRegionTaskData;
++@@ -322,6 +_,17 @@
++ 
++         private boolean isDestroyed;
++ 
+++        private void retireExistingTasks() {
+++            synchronized (this) {
+++                this.isDestroyed = true; // Reject enqueue races after the final retirement scan.
+++                for (final var queue : this.queues) {
+++                    for (final var task : queue) {
+++                        if (task.retired != null) task.retire();
+++                    }
+++                }
+++            }
+++        }
+++
++         public int getScheduledTasks() {
++             synchronized (this) {
++                 int ret = 0;
++@@ -397,6 +_,10 @@
++                         final ThreadedRegionizer.ThreadedRegion<TickRegions.TickRegionData, TickRegions.TickRegionSectionData>
++                             region = into.get(sectionKey);
++                         if (region == null) {
+++                            if (task.retired != null) {
+++                                task.retire();
+++                                continue;
+++                            }
++                             throw new IllegalStateException();
++                         }
++ 
++@@ -471,7 +_,9 @@
++             try {
++                 task.executeInternal();
++             } finally {
++-                task.world.decrementReference(referenceCounter, task.sectionLowerLeftCoord);
+++                if (referenceCounter != ChunkBasedPriorityTask.REFERENCE_COUNTER_NOT_SET) {
+++                    task.world.decrementReference(referenceCounter, task.sectionLowerLeftCoord);
+++                }
++             }
++ 
++             return true;
++@@ -493,6 +_,14 @@
++             private volatile ReferenceCountData referenceCounter;
++             private static final VarHandle REFERENCE_COUNTER_HANDLE = ConcurrentUtil.getVarHandle(ChunkBasedPriorityTask.class, "referenceCounter", ReferenceCountData.class);
++             private Runnable run;
+++            private Runnable retired;
+++
+++            private void retire() {
+++                if (this.cancel()) {
+++                    // Region destruction/splitting holds native locks: never invoke plugin continuations there.
+++                    java.util.concurrent.ForkJoinPool.commonPool().execute(this.retired);
+++                }
+++            }
++             private volatile Priority priority;
++             private static final VarHandle PRIORITY_HANDLE = ConcurrentUtil.getVarHandle(ChunkBasedPriorityTask.class, "priority", Priority.class);
++ 
++@@ -603,6 +_,20 @@
++                     return false;
++                 }
++ 
+++                if (this.retired != null) {
+++                    for (;;) {
+++                        final PrioritisedQueue queue = this.world.getQueue(true, this.chunkX, this.chunkZ, this.isChunkTask);
+++                        if (queue == null) {
+++                            this.retire();
+++                            return false;
+++                        }
+++                        final Boolean pushed = queue.tryPush(this);
+++                        if (pushed == null) return false;
+++                        if (pushed) return true;
+++                        // Only reroute a native split/merge; do not retry destruction or add tickets.
+++                    }
+++                }
+++
++                 final ReferenceCountData referenceCounter = this.world.incrementReference(this.sectionLowerLeftCoord);
++                 if (this.compareAndExchangeReferenceCounter(REFERENCE_COUNTER_NOT_SET, referenceCounter) != REFERENCE_COUNTER_NOT_SET) {
++                     // we don't expect race conditions here, so it is OK if we have to needlessly reference count
++@@ -673,7 +_,7 @@
++                         return null;
++                     }
++ 
++-                    if (curr == REFERENCE_COUNTER_NOT_SET) {
+++                    if (curr == REFERENCE_COUNTER_NOT_SET && this.retired == null) {
++                         throw new IllegalStateException();
++                     }
++ 
+diff --git a/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/TickRegions.java.patch b/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/TickRegions.java.patch
+new file mode 100644
+index 00000000..b69e0297
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/io/papermc/paper/threadedregions/TickRegions.java.patch
+@@ -0,0 +1,10 @@
++--- a/io/papermc/paper/threadedregions/TickRegions.java
+++++ b/io/papermc/paper/threadedregions/TickRegions.java
++@@ -119,6 +_,7 @@
++ 
++     @Override
++     public void onRegionDestroy(final ThreadedRegionizer.ThreadedRegion<TickRegionData, TickRegionSectionData> region) {
+++        region.getData().getTaskQueueData().retireExistingTasks();
++         // nothing for now
++         io.canvasmc.canvas.threadedregions.SchedulerUtil.getHandle().onRegionDestroy(region); // Canvas - region profiler
++         // Canvas start - region threading
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ChunkMap.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ChunkMap.java.patch
+index abdc6687..9a0ee020 100644
+--- a/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ChunkMap.java.patch
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ChunkMap.java.patch
+@@ -1,5 +1,14 @@
+ --- a/net/minecraft/server/level/ChunkMap.java
+ +++ b/net/minecraft/server/level/ChunkMap.java
++@@ -190,7 +_,7 @@
++             levelStorage.getDimensionPath(level.dimension()).resolve("region"),
++             dataFixer,
++             syncWrites,
++-            DataFixTypes.CHUNK
+++            DataFixTypes.CHUNK, level.canvas$isEphemeral() // Canvas
++         );
++         Path storageFolder = levelStorage.getDimensionPath(level.dimension());
++         this.storageName = storageFolder.getFileName().toString();
+ @@ -244,7 +_,7 @@
+  
+          final int index = entity.getType().getCategory().ordinal();
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ServerLevel.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ServerLevel.java.patch
+index bf8ddf96..51dccafa 100644
+--- a/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ServerLevel.java.patch
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/server/level/ServerLevel.java.patch
+@@ -1,5 +1,51 @@
+ --- a/net/minecraft/server/level/ServerLevel.java
+ +++ b/net/minecraft/server/level/ServerLevel.java
++@@ -571,6 +_,14 @@
++     }
++     // Paper end - chunk tick iteration
++ 
+++    // Canvas start - ephemeral world storage
+++    private final boolean canvas$ephemeral;
+++
+++    public final boolean canvas$isEphemeral() {
+++        return this.canvas$ephemeral;
+++    }
+++    // Canvas end - ephemeral world storage
+++
++     public ServerLevel(
++         final MinecraftServer server,
++         final Executor executor,
++@@ -591,6 +_,12 @@
++         io.papermc.paper.world.PaperWorldLoader.LoadedWorldData loadedWorldData
++         // Paper end - add parameters
++     ) {
+++        // Canvas start - ephemeral world storage
+++        final boolean ephemeral = gen instanceof io.canvasmc.canvas.world.EphemeralWorldGenerator;
+++        if (ephemeral && !savedDataStorage.canvas$isEphemeral()) {
+++            throw new IllegalArgumentException("Ephemeral worlds require non-persistent SavedDataStorage");
+++        }
+++        // Canvas end - ephemeral world storage
++         // CraftBukkit start
++         final io.papermc.paper.world.saveddata.PaperLevelOverrides levelData = loadedWorldData.levelOverrides();
++         savedDataStorage.set(io.papermc.paper.world.saveddata.PaperLevelOverrides.TYPE, levelData);
++@@ -599,6 +_,8 @@
++         final GameRules gameRules = new GameRules(server.getWorldData().enabledFeatures(), savedDataStorage.computeIfAbsent(net.minecraft.world.level.gamerules.GameRuleMap.TYPE));
++         this.gameRules = gameRules;
++         super(levelData, dimension, server.registryAccess(), levelStem.type(), false, isDebug, biomeZoomSeed, server.getMaxChainedNeighborUpdates(), loadedWorldData.bukkitName(), gen, biomeProvider, env, spigotConfig -> server.paperConfigurations.createWorldConfig(io.papermc.paper.configuration.PaperConfigurations.createWorldContextMap(server.storageSource.getDimensionPath(dimension), dimension.identifier(), spigotConfig, server.registryAccess(), gameRules)), executor); // Paper - create paper world configs // Paper - Anti-Xray - Pass executor
+++        this.canvas$ephemeral = ephemeral; // Canvas - immutable before chunk system construction
+++        if (ephemeral) this.noSave = true; // Retain content until explicitly destroyed; IO guards remain independent.
++         this.weatherData = savedDataStorage.computeIfAbsent(WeatherData.TYPE);
++         this.weatherData.setLevel(this);
++         this.typeKey = typeKey;
++@@ -698,7 +_,7 @@
++             new ca.spottedleaf.moonrise.patches.chunk_system.io.datacontroller.EntityDataController.EntityRegionFileStorage(
++                 new RegionStorageInfo(levelStorage.getLevelId(), dimension, "entities"),
++                 levelStorage.getDimensionPath(dimension).resolve("entities"),
++-                server.forceSynchronousWrites()
+++                server.forceSynchronousWrites(), this.canvas$ephemeral // Canvas
++             ),
++             this.chunkTaskScheduler
++         );
+ @@ -707,6 +_,13 @@
+          // Paper end - rewrite chunk system
+          this.getCraftServer().addWorld(this.getWorld()); // CraftBukkit
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/world/entity/ai/village/poi/PoiManager.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/world/entity/ai/village/poi/PoiManager.java.patch
+new file mode 100644
+index 00000000..e52c0704
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/world/entity/ai/village/poi/PoiManager.java.patch
+@@ -0,0 +1,11 @@
++--- a/net/minecraft/world/entity/ai/village/poi/PoiManager.java
+++++ b/net/minecraft/world/entity/ai/village/poi/PoiManager.java
++@@ -183,7 +_,7 @@
++         final LevelHeightAccessor levelHeightAccessor
++     ) {
++         super(
++-            new SimpleRegionStorage(info, folder, fixerUpper, sync, DataFixTypes.POI_CHUNK),
+++            new SimpleRegionStorage(info, folder, fixerUpper, sync, DataFixTypes.POI_CHUNK, ((net.minecraft.server.level.ServerLevel)levelHeightAccessor).canvas$isEphemeral()), // Canvas
++             PoiSection.Packed.CODEC,
++             PoiSection::pack,
++             PoiSection.Packed::unpack,
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/IOWorker.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/IOWorker.java.patch
+new file mode 100644
+index 00000000..49eb9b8e
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/IOWorker.java.patch
+@@ -0,0 +1,15 @@
++--- a/net/minecraft/world/level/chunk/storage/IOWorker.java
+++++ b/net/minecraft/world/level/chunk/storage/IOWorker.java
++@@ -37,7 +_,11 @@
++     private static final int REGION_CACHE_SIZE = 1024;
++ 
++     protected IOWorker(final RegionStorageInfo info, final Path dir, final boolean sync) {
++-        this.storage = new RegionFileStorage(info, dir, sync);
+++        this(info, dir, sync, false);
+++    }
+++
+++    protected IOWorker(final RegionStorageInfo info, final Path dir, final boolean sync, final boolean ephemeral) {
+++        this.storage = new RegionFileStorage(info, dir, sync, ephemeral);
++         this.consecutiveExecutor = new PriorityConsecutiveExecutor(IOWorker.Priority.values().length, Util.ioPool(), "IOWorker-" + info.type());
++     }
++ 
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/RegionFileStorage.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/RegionFileStorage.java.patch
+new file mode 100644
+index 00000000..b9737417
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/RegionFileStorage.java.patch
+@@ -0,0 +1,68 @@
++--- a/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
+++++ b/net/minecraft/world/level/chunk/storage/RegionFileStorage.java
++@@ -96,6 +_,7 @@
++ 
++     @Override
++     public synchronized final RegionFile moonrise$getRegionFileIfExists(final int chunkX, final int chunkZ) throws IOException {
+++        if (this.canvas$ephemeral) return null; // Canvas - never open initial source files
++         final long key = ChunkPos.pack(chunkX >> REGION_SHIFT, chunkZ >> REGION_SHIFT);
++ 
++         RegionFile ret = this.regionCache.getAndMoveToFirst(key);
++@@ -135,6 +_,7 @@
++     public final ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData moonrise$startWrite(
++         final int chunkX, final int chunkZ, final CompoundTag compound
++     ) throws IOException {
+++        if (this.canvas$ephemeral) return new ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData(null, ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData.WriteResult.DELETE, null, null); // Canvas
++         if (compound == null) {
++             return new ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData(
++                 compound, ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO.RegionDataController.WriteData.WriteResult.DELETE,
++@@ -266,7 +_,14 @@
++     }
++     // Paper end - rewrite chunk system
++ 
+++    private final boolean canvas$ephemeral; // Canvas
+++
++     public RegionFileStorage(final RegionStorageInfo info, final Path folder, final boolean sync) {
+++        this(info, folder, sync, false);
+++    }
+++
+++    public RegionFileStorage(final RegionStorageInfo info, final Path folder, final boolean sync, final boolean ephemeral) {
+++        this.canvas$ephemeral = ephemeral;
++         this.folder = folder;
++         this.sync = sync;
++         this.info = info;
++@@ -274,6 +_,10 @@
++     }
++ 
++     @org.jetbrains.annotations.Contract("_, false -> !null") private @Nullable RegionFile getRegionFile(final ChunkPos pos, boolean existingOnly) throws IOException { // CraftBukkit
+++        if (this.canvas$ephemeral) {
+++            if (existingOnly) return null;
+++            throw new IllegalStateException("Ephemeral world storage cannot open region files");
+++        }
++         // Paper start - rewrite chunk system
++         if (existingOnly) {
++             return this.moonrise$getRegionFileIfExists(pos.x(), pos.z());
++@@ -345,6 +_,7 @@
++     // Paper end
++ 
++     public @Nullable CompoundTag read(final ChunkPos pos) throws IOException {
+++        if (this.canvas$ephemeral) return null; // Canvas
++         // CraftBukkit start - SPIGOT-5680: There's no good reason to preemptively create files on read, save that for writing
++         RegionFile region = this.getRegionFile(pos, true);
++         if (region == null) {
++@@ -382,6 +_,7 @@
++     }
++ 
++     public void scanChunk(final ChunkPos pos, final StreamTagVisitor scanner) throws IOException {
+++        if (this.canvas$ephemeral) return; // Canvas
++         // CraftBukkit start - SPIGOT-5680: There's no good reason to preemptively create files on read, save that for writing
++         RegionFile region = this.getRegionFile(pos, true);
++         if (region == null) {
++@@ -397,6 +_,7 @@
++     }
++ 
++     public void write(final ChunkPos pos, final @Nullable CompoundTag value) throws IOException {
+++        if (this.canvas$ephemeral) return; // Canvas
++         if (!SharedConstants.DEBUG_DONT_SAVE_WORLD) {
++             RegionFile region = this.getRegionFile(pos, value == null); // CraftBukkit // Paper - rewrite chunk system
++             // Paper start - rewrite chunk system
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/SimpleRegionStorage.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/SimpleRegionStorage.java.patch
+new file mode 100644
+index 00000000..975c0191
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/chunk/storage/SimpleRegionStorage.java.patch
+@@ -0,0 +1,21 @@
++--- a/net/minecraft/world/level/chunk/storage/SimpleRegionStorage.java
+++++ b/net/minecraft/world/level/chunk/storage/SimpleRegionStorage.java
++@@ -34,10 +_,17 @@
++     public SimpleRegionStorage(
++         final RegionStorageInfo info, final Path folder, final DataFixer fixerUpper, final boolean syncWrites, final DataFixTypes dataFixType
++     ) {
+++        this(info, folder, fixerUpper, syncWrites, dataFixType, false);
+++    }
+++
+++    public SimpleRegionStorage(
+++        final RegionStorageInfo info, final Path folder, final DataFixer fixerUpper, final boolean syncWrites, final DataFixTypes dataFixType,
+++        final boolean ephemeral
+++    ) {
++         info.dfuType()[0] = dataFixType; // Paper - crazy hack to indicate what type the region file is
++         this.fixerUpper = fixerUpper;
++         this.dataFixType = dataFixType;
++-        this.storage = new IOWorker(info, folder, syncWrites).storage; // Paper - rewrite chunk system
+++        this.storage = new IOWorker(info, folder, syncWrites, ephemeral).storage; // Paper - rewrite chunk system // Canvas
++     }
++ 
++     public boolean isOldChunkAround(final ChunkPos pos, final int range) {
+diff --git a/canvas-server/minecraft-patches/sources/net/minecraft/world/level/storage/SavedDataStorage.java.patch b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/storage/SavedDataStorage.java.patch
+new file mode 100644
+index 00000000..ecdc7b26
+--- /dev/null
++++ b/canvas-server/minecraft-patches/sources/net/minecraft/world/level/storage/SavedDataStorage.java.patch
+@@ -0,0 +1,40 @@
++--- a/net/minecraft/world/level/storage/SavedDataStorage.java
+++++ b/net/minecraft/world/level/storage/SavedDataStorage.java
++@@ -47,7 +_,20 @@
++     private CompletableFuture<?> pendingWriteFuture = CompletableFuture.completedFuture(null);
++     private boolean closed;
++ 
+++    // Canvas start - ephemeral world storage
+++    private final boolean canvas$ephemeral;
+++
+++    public boolean canvas$isEphemeral() {
+++        return this.canvas$ephemeral;
+++    }
+++
++     public SavedDataStorage(final Path dataFolder, final DataFixer fixerUpper, final HolderLookup.Provider registries) {
+++        this(dataFolder, fixerUpper, registries, false);
+++    }
+++
+++    public SavedDataStorage(final Path dataFolder, final DataFixer fixerUpper, final HolderLookup.Provider registries, final boolean ephemeral) {
+++        this.canvas$ephemeral = ephemeral;
+++        // Canvas end - ephemeral world storage
++         this.fixerUpper = fixerUpper;
++         this.dataFolder = dataFolder;
++         this.registries = registries;
++@@ -122,6 +_,7 @@
++     }
++ 
++     private <T extends SavedData> @Nullable T readSavedData(final SavedDataType<T> type) {
+++        if (this.canvas$ephemeral) return null; // Canvas - never import saved world content
++         try {
++             Path file = this.getDataFile(type.id());
++             if (Files.exists(file)) {
++@@ -244,6 +_,8 @@
++         if (this.closed) {
++             throw new IllegalStateException("Trying to schedule save when SavedDataStorage is already closed");
++         }
+++
+++        if (this.canvas$ephemeral) return CompletableFuture.completedFuture(null); // Canvas - no serialization or disk tasks
++ 
++         Map<SavedDataType<?>, CompoundTag> tagsToSave = this.collectDirtyTagsToSave();
++         if (tagsToSave.isEmpty()) {
+diff --git a/canvas-server/paper-patches/files/src/main/java/io/papermc/paper/world/PaperWorldLoader.java.patch b/canvas-server/paper-patches/files/src/main/java/io/papermc/paper/world/PaperWorldLoader.java.patch
+new file mode 100644
+index 00000000..2a83b2ee
+--- /dev/null
++++ b/canvas-server/paper-patches/files/src/main/java/io/papermc/paper/world/PaperWorldLoader.java.patch
+@@ -0,0 +1,24 @@
++--- a/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
+++++ b/src/main/java/io/papermc/paper/world/PaperWorldLoader.java
++@@ -99,10 +_,20 @@
++         final ResourceKey<Level> dimension,
++         final String defaultName
++     ) {
+++        return loadWorldData(server, dimension, defaultName, false);
+++    }
+++
+++    // Canvas - ephemeral world storage
+++    public static LoadedWorldData loadWorldData(
+++        final MinecraftServer server,
+++        final ResourceKey<Level> dimension,
+++        final String defaultName,
+++        final boolean ephemeral
+++    ) {
++         final var storageSource = server.storageSource;
++         final var registryAccess = server.registryAccess();
++ 
++-        final SavedDataStorage tempStorage = new SavedDataStorage(storageSource.getDimensionPath(dimension).resolve(LevelResource.DATA.id()), DataFixers.getDataFixer(), registryAccess);
+++        final SavedDataStorage tempStorage = new SavedDataStorage(storageSource.getDimensionPath(dimension).resolve(LevelResource.DATA.id()), DataFixers.getDataFixer(), registryAccess, ephemeral);
++         final PaperWorldMetadata metadata = tempStorage.get(PaperWorldMetadata.TYPE);
++         final PaperWorldPDC pdc = tempStorage.get(PaperWorldPDC.TYPE);
++         final PaperLevelOverrides levelOverrides = tempStorage.get(PaperLevelOverrides.TYPE);
+diff --git a/canvas-server/paper-patches/files/src/main/java/org/bukkit/craftbukkit/CraftServer.java.patch b/canvas-server/paper-patches/files/src/main/java/org/bukkit/craftbukkit/CraftServer.java.patch
+new file mode 100644
+index 00000000..279d6d67
+--- /dev/null
++++ b/canvas-server/paper-patches/files/src/main/java/org/bukkit/craftbukkit/CraftServer.java.patch
+@@ -0,0 +1,51 @@
++--- a/src/main/java/org/bukkit/craftbukkit/CraftServer.java
+++++ b/src/main/java/org/bukkit/craftbukkit/CraftServer.java
++@@ -1220,6 +_,8 @@
++             chunkGenerator = this.getGenerator(name);
++         }
++ 
+++        final boolean ephemeral = chunkGenerator instanceof io.canvasmc.canvas.world.EphemeralWorldGenerator; // Canvas
+++
++         if (biomeProvider == null) {
++             biomeProvider = this.getBiomeProvider(name);
++         }
++@@ -1239,7 +_,7 @@
++             throw new IllegalStateException("Missing configured level stem " + actualDimension);
++         }
++         try {
++-            WorldFolderMigration.migrateApiWorld(
+++            if (!ephemeral) WorldFolderMigration.migrateApiWorld( // Canvas - no initial source for ephemeral worlds
++                 this.console.storageSource,
++                 registryAccess,
++                 name,
++@@ -1252,10 +_,10 @@
++         PaperWorldLoader.LoadedWorldData loadedWorldData = PaperWorldLoader.loadWorldData(
++             this.console,
++             dimensionKey,
++-            name
+++            name, ephemeral // Canvas
++         );
++         final PrimaryLevelData primaryLevelData = (PrimaryLevelData) this.console.getWorldData();
++-        WorldGenSettings worldGenSettings = LevelStorageSource.readExistingSavedData(this.console.storageSource, dimensionKey, registryAccess, WorldGenSettings.TYPE)
+++        WorldGenSettings worldGenSettings = ephemeral ? null : LevelStorageSource.readExistingSavedData(this.console.storageSource, dimensionKey, registryAccess, WorldGenSettings.TYPE)
++             .result()
++             .orElse(null);
++         RegistryAccess contextRegistryAccess = registryAccess;
++@@ -1292,7 +_,7 @@
++ 
++         levelStemRegistry = contextRegistryAccess.lookupOrThrow(Registries.LEVEL_STEM);
++ 
++-        if (this.console.options.has("forceUpgrade")) {
+++        if (!ephemeral && this.console.options.has("forceUpgrade")) { // Canvas
++             net.minecraft.server.Main.forceUpgrade(this.console.storageSource, DataFixers.getDataFixer(), this.console.options.has("eraseCache"), () -> true, contextRegistryAccess, this.console.options.has("recreateRegionFiles"));
++         }
++ 
++@@ -1310,7 +_,7 @@
++             biomeProvider = chunkGenerator.getDefaultBiomeProvider(worldInfo);
++         }
++ 
++-        final SavedDataStorage savedDataStorage = new SavedDataStorage(this.console.storageSource.getDimensionPath(dimensionKey).resolve(LevelResource.DATA.id()), this.console.getFixerUpper(), registryAccess);
+++        final SavedDataStorage savedDataStorage = new SavedDataStorage(this.console.storageSource.getDimensionPath(dimensionKey).resolve(LevelResource.DATA.id()), this.console.getFixerUpper(), registryAccess, ephemeral); // Canvas
++         savedDataStorage.set(WorldGenSettings.TYPE, new WorldGenSettings(genSettingsFinal.options(), genSettingsFinal.dimensions()));
++         List<CustomSpawner> list = ImmutableList.of(
++             new PhantomSpawner(), new PatrolSpawner(), new CatSpawner(), new VillageSiege(), new WanderingTraderSpawner(savedDataStorage)
+diff --git a/EPHEMERAL_SERVER_PATCH.md b/EPHEMERAL_SERVER_PATCH.md
+new file mode 100644
+index 00000000..1de3849e
+--- /dev/null
++++ b/EPHEMERAL_SERVER_PATCH.md
+@@ -0,0 +1,73 @@
++# Experimental ephemeral-content capability
++
++Base: Canvas `ver/26.2`, commit `a631d9d7f16e2ea127cb731a31775206877038be`
++(the source revision of `26.2 build 994-stable`). Java 25 is required.
++This is a local server patch, not an upstream release. Polar's Canvas backend requires it.
++
++## Contract
++
++A Bukkit `ChunkGenerator` implementing `io.canvasmc.canvas.world.EphemeralWorldGenerator`
++opts its world into non-persistent content. The server snapshots this at construction;
++there is no mutable configuration flag. Use an exclusively owned, fresh instance directory.
++Marked worlds start with vanilla autosaving/unloading disabled (`noSave=true`) for RAM retention.
++This does not add ticking tickets or provide void generation, force-unload chunks, change regional
++ownership, or guarantee garbage collection. The immutable content IO guards are independent of `noSave`.
++
++The capability disables reads and writes of chunks (including protochunks), entities, POI
++and per-world saved data. It covers native unloads, autosaves and regional/server shutdown.
++Normal worlds retain their existing persistence behavior. Ancillary administrative files,
++player storage and external-plugin storage are outside the contract.
++
++The guards exist both before serialization and at controller/storage boundaries. Pending
++Moonrise IO operations still complete normally; simply dropping queued operations would
++strand unload tasks. The low-level guards also protect direct storage/scanner paths.
++Existing files are not imported, overwritten or deleted by ephemeral content operations.
++
++Custom NMS creators must use `PaperWorldLoader.loadWorldData(..., true)` and
++`SavedDataStorage(..., true)` before constructing a marked `ServerLevel`. The constructor
++rejects incompatible saved-data storage. Ordinary Bukkit `WorldCreator` handles this itself.
++
++For marked worlds, native halt timeouts and cache-close failures are fatal unload failures,
++not warnings followed by success. Async unload reports `FAIL_RESOURCE_CLOSE` at most once,
++keeps the world in its unloading state and retains Canvas's server-stop safety behavior.
++Do not retry a partially failed native unload or delete its directory. A successful callback
++is not a promise that other plugins or the JVM have released their references.
++
++## Build and tests
++
++`EphemeralChunkLifecycle.contractVersion()` returns 1. `destroyChunk(ServerLevel, x, z)` returns
++a future containing `DESTROYED`, `ALREADY_ABSENT`, `BLOCKED` or `WORLD_DESTROYING`; technical errors
++are exceptional. It dispatches through an existing-region ticketless queue, preserving native
++split/merge routing and retiring tasks when regions disappear. It never loads a missing region,
++adds a scheduler ticket, removes foreign tickets or forcibly removes non-unloadable entities.
++Destruction uses the native holder's three unload stages and existing ticket/scheduling locks.
++
++```sh
++./gradlew applyAllPatches
++./gradlew :canvas-server:test --tests io.canvasmc.canvas.world.EphemeralStorageTestSuite
++./gradlew createPaperclipJar :canvas-server:ephemeralIntegrationTestPlugin
++```
++
++Server: `canvas-server/build/libs/canvas-paperclip-26.2.local-SNAPSHOT.jar`.
++The opt-in test plugin is `canvas-server/build/libs/EphemeralStorageIntegration.jar`.
++**Never put this test plugin on a production server:** it creates worlds and stops the server.
++Use an empty disposable directory, accept the Minecraft EULA yourself, and launch with Java 25.
++The plugin writes `ephemeral-capability-result.txt`; `PASS assertions=14` is the expected result.
++
++Validated locally:
++
++- Ten unit tests: all three controllers, direct existing/absent region storage, saved data,
++  native pre-serialization guards, generation/IO halt failures, aggregate cache-close failures,
++  exactly-once unload completion after failure, and ticketless queue execution/retirement without IO or tickets.
++- Actual patched Canvas boot: generated a chunk with a block entity, entity and POI; invoked
++  the native shutdown-save path; unloaded using `save=false`; observed no content files.
++  A normal world still wrote block/entity/POI regions and unloaded successfully (14 assertions).
++
++The separate Polar repository supplies a two-regional-thread lifecycle integration plugin/runner.
++Its actual patched-server run passed 28 assertions: targeted destruction across distant regions,
++ticket blockers, absent chunks, void revisit, checked/cancelled unload, cleanup retry, and weak-reference
++collection of chunks while the world remains loaded followed by collection of the detached world.
++Not yet validated exhaustively: split/merge stress, players and teleport races, sustained memory plateau,
++heap analysis, crash/restart, and injected real-server shutdown failures. The storage-only smoke test
++used one regional tick thread. No production-readiness claim is made. Human review is required
++before upstream submission.
+diff --git a/canvas-api/src/main/java/io/canvasmc/canvas/world/EphemeralWorldGenerator.java b/canvas-api/src/main/java/io/canvasmc/canvas/world/EphemeralWorldGenerator.java
+new file mode 100644
+index 00000000..a6317f66
+--- /dev/null
++++ b/canvas-api/src/main/java/io/canvasmc/canvas/world/EphemeralWorldGenerator.java
+@@ -0,0 +1,20 @@
++package io.canvasmc.canvas.world;
++
++/**
++ * Opts a {@link org.bukkit.generator.ChunkGenerator} into non-persistent world content.
++ * The server snapshots this marker when constructing the world; it cannot be toggled later.
++ *
++ * <p>Chunk, entity, POI and per-world saved-data reads and writes are disabled, including
++ * autosaves, native chunk unloads, asynchronous world unloads and server shutdown.
++ * Administrative files (configuration, locks and ownership metadata) may still exist.
++ * Existing content is not a template and must not be supplied for an ephemeral world.
++ * Use a dedicated, exclusively owned world directory.</p>
++ *
++ * <p>This marker does not supply a void generator, retain unloaded chunks, remove tickets,
++ * change threading rules, or promise garbage collection. Plugins remain responsible for
++ * generation, retention and safe lifecycle coordination. Player data and external plugin
++ * storage are not covered. Failed asynchronous unloads must not be treated as permission
++ * to delete the world directory.</p>
++ */
++public interface EphemeralWorldGenerator {
++}
+diff --git a/canvas-server/src/ephemeralIntegrationTest/java/io/canvasmc/canvas/world/EphemeralStorageIntegrationPlugin.java b/canvas-server/src/ephemeralIntegrationTest/java/io/canvasmc/canvas/world/EphemeralStorageIntegrationPlugin.java
+new file mode 100644
+index 00000000..f93f0e3a
+--- /dev/null
++++ b/canvas-server/src/ephemeralIntegrationTest/java/io/canvasmc/canvas/world/EphemeralStorageIntegrationPlugin.java
+@@ -0,0 +1,133 @@
++package io.canvasmc.canvas.world;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.NewChunkHolder;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.concurrent.CompletableFuture;
++import net.minecraft.server.level.ServerLevel;
++import org.bukkit.Bukkit;
++import org.bukkit.Material;
++import org.bukkit.World;
++import org.bukkit.WorldCreator;
++import org.bukkit.WorldType;
++import org.bukkit.craftbukkit.CraftWorld;
++import org.bukkit.entity.ArmorStand;
++import org.bukkit.generator.ChunkGenerator;
++import org.bukkit.plugin.java.JavaPlugin;
++
++/** Disposable-server test only: creates worlds and stops the server. Not a production plugin. */
++public final class EphemeralStorageIntegrationPlugin extends JavaPlugin {
++    private int assertions;
++
++    @Override public void onEnable() {
++        Bukkit.getGlobalRegionScheduler().execute(this, () -> {
++            try {
++                World world = new WorldCreator("ephemeral_capability_test").type(WorldType.FLAT)
++                    .generator(new EphemeralVoid()).createWorld();
++                check(((CraftWorld) world).getHandle().canvas$isEphemeral(), "immutable capability enabled");
++                Path folder = world.getWorldFolder().toPath();
++                populate(world, true).thenCompose(ignored -> unload(world, false)).thenCompose(ignored -> {
++                    check(noContent(folder), "forced regional shutdown left no world content files");
++                    return onGlobal(() -> {
++                        World persistent = new WorldCreator("persistent_capability_test").type(WorldType.FLAT)
++                            .generator(new VoidGenerator()).createWorld();
++                        check(!((CraftWorld) persistent).getHandle().canvas$isEphemeral(), "normal world remains persistent");
++                        return persistent;
++                    });
++                }).thenCompose(persistent -> {
++                    Path persistentFolder = persistent.getWorldFolder().toPath();
++                    return populate(persistent, false).thenCompose(ignored -> unload(persistent, true)).thenAccept(ignored ->
++                        check(!noContent(persistentFolder), "normal world still writes region content"));
++                }).whenComplete((ignored, failure) -> finish(failure));
++            } catch (Throwable failure) { finish(failure); }
++        });
++    }
++
++    private CompletableFuture<Void> populate(World world, boolean ephemeral) {
++        return world.getChunkAtAsync(32, 32).thenCompose(chunk -> {
++            CompletableFuture<Void> result = new CompletableFuture<>();
++            Bukkit.getRegionScheduler().execute(this, world, 32, 32, () -> {
++                try {
++                    world.getBlockAt(512, 64, 512).setType(Material.CHEST);
++                    world.getBlockAt(513, 64, 512).setType(Material.COMPOSTER);
++                    world.spawn(new org.bukkit.Location(world, 512.5, 65, 512.5), ArmorStand.class,
++                        stand -> stand.setGravity(false));
++                    ServerLevel level = ((CraftWorld) world).getHandle();
++                    NewChunkHolder holder = level.moonrise$getChunkTaskScheduler().chunkHolderManager.getChunkHolder(32, 32);
++                    check(holder.getCurrentChunk() != null, "generated chunk exists");
++                    check(holder.getEntityChunk() != null, "entity lifecycle exists");
++                    check(holder.getPoiChunk() != null, "POI lifecycle exists");
++                    if (ephemeral) {
++                        var saved = holder.save(true);
++                        check(saved == null || (!saved.savedChunk() && !saved.savedEntityChunk() && !saved.savedPoiChunk()),
++                            "native shutdown save skips all content serialization");
++                        level.getChunkSource().getDataStorage().scheduleSave().join();
++                        check(noContent(world.getWorldFolder().toPath()), "no content before world unload");
++                    }
++                    result.complete(null);
++                } catch (Throwable failure) { result.completeExceptionally(failure); }
++            });
++            return result;
++        });
++    }
++
++    private CompletableFuture<Void> unload(World world, boolean save) {
++        CompletableFuture<Void> future = new CompletableFuture<>();
++        Bukkit.getGlobalRegionScheduler().execute(this, () -> {
++            try {
++                Bukkit.getServer().unloadWorldAsync(world, save, result -> {
++                    try {
++                        if (result.isSuccess()) {
++                            check(Bukkit.getWorld(world.getUID()) == null, "unloaded world deregistered before success");
++                            future.complete(null);
++                        } else future.completeExceptionally(new IllegalStateException("Unload failed: " + result));
++                    } catch (Throwable failure) { future.completeExceptionally(failure); }
++                });
++            } catch (Throwable failure) { future.completeExceptionally(failure); }
++        });
++        return future;
++    }
++
++    private <T> CompletableFuture<T> onGlobal(java.util.function.Supplier<T> action) {
++        CompletableFuture<T> result = new CompletableFuture<>();
++        Bukkit.getGlobalRegionScheduler().execute(this, () -> {
++            try { result.complete(action.get()); }
++            catch (Throwable failure) { result.completeExceptionally(failure); }
++        });
++        return result;
++    }
++
++    private boolean noContent(Path folder) {
++        try (var paths = Files.walk(folder)) {
++            return paths.noneMatch(path -> path.toString().endsWith(".mca") || path.toString().endsWith(".dat")
++                || path.toString().endsWith(".polar"));
++        } catch (java.io.IOException failure) { throw new java.io.UncheckedIOException(failure); }
++    }
++
++    private synchronized void check(boolean condition, String message) {
++        if (!condition) throw new AssertionError(message);
++        assertions++;
++        getLogger().info("ASSERT " + message);
++    }
++
++    private void finish(Throwable failure) {
++        String result = failure == null ? "PASS assertions=" + assertions : "FAIL " + failure;
++        if (failure != null) failure.printStackTrace();
++        getLogger().info(result);
++        try { Files.writeString(Path.of("ephemeral-capability-result.txt"), result); }
++        catch (java.io.IOException writeFailure) { writeFailure.printStackTrace(); }
++        Bukkit.getGlobalRegionScheduler().execute(this, Bukkit::shutdown);
++    }
++
++    private static class VoidGenerator extends ChunkGenerator {
++        @Override public boolean shouldGenerateNoise() { return false; }
++        @Override public boolean shouldGenerateSurface() { return false; }
++        @Override public boolean shouldGenerateBedrock() { return false; }
++        @Override public boolean shouldGenerateCaves() { return false; }
++        @Override public boolean shouldGenerateDecorations() { return false; }
++        @Override public boolean shouldGenerateMobs() { return false; }
++        @Override public boolean shouldGenerateStructures() { return false; }
++        @Override public boolean isParallelCapable() { return true; }
++    }
++    private static final class EphemeralVoid extends VoidGenerator implements EphemeralWorldGenerator {}
++}
+diff --git a/canvas-server/src/ephemeralIntegrationTest/resources/plugin.yml b/canvas-server/src/ephemeralIntegrationTest/resources/plugin.yml
+new file mode 100644
+index 00000000..87d27e61
+--- /dev/null
++++ b/canvas-server/src/ephemeralIntegrationTest/resources/plugin.yml
+@@ -0,0 +1,5 @@
++name: EphemeralStorageIntegration
++version: '1'
++main: io.canvasmc.canvas.world.EphemeralStorageIntegrationPlugin
++api-version: '26.2'
++folia-supported: true
+diff --git a/canvas-server/src/main/java/io/canvasmc/canvas/world/EphemeralChunkLifecycle.java b/canvas-server/src/main/java/io/canvasmc/canvas/world/EphemeralChunkLifecycle.java
+new file mode 100644
+index 00000000..b7649281
+--- /dev/null
++++ b/canvas-server/src/main/java/io/canvasmc/canvas/world/EphemeralChunkLifecycle.java
+@@ -0,0 +1,25 @@
++package io.canvasmc.canvas.world;
++
++import io.papermc.paper.threadedregions.RegionizedServer;
++import java.util.concurrent.CompletableFuture;
++import net.minecraft.server.level.ServerLevel;
++
++/** Versioned native bridge. No Bukkit scheduler tickets or loads are needed for destruction. */
++public final class EphemeralChunkLifecycle {
++    private EphemeralChunkLifecycle() {}
++    public static int contractVersion() { return 1; }
++
++    public static CompletableFuture<String> destroyChunk(ServerLevel world, int x, int z) {
++        if (!world.canvas$isEphemeral()) return CompletableFuture.failedFuture(new IllegalArgumentException("Not ephemeral"));
++        var manager = world.moonrise$getChunkTaskScheduler().chunkHolderManager;
++        if (manager.getChunkHolder(x, z) == null) return CompletableFuture.completedFuture("ALREADY_ABSENT");
++        CompletableFuture<String> future = new CompletableFuture<>();
++        RegionizedServer.getInstance().taskQueue.queueExistingTickTask(world, x, z, () -> {
++            try {
++                if (world.canvas$unloadTicket.isPresent()) future.complete("WORLD_DESTROYING");
++                else future.complete(manager.canvas$destroyEphemeralChunk(x, z));
++            } catch (Throwable failure) { future.completeExceptionally(failure); }
++        }, () -> future.complete(manager.getChunkHolder(x, z) == null ? "ALREADY_ABSENT" : "BLOCKED"));
++        return future;
++    }
++}
+diff --git a/canvas-server/src/test/java/io/canvasmc/canvas/world/EphemeralStorageTestSuite.java b/canvas-server/src/test/java/io/canvasmc/canvas/world/EphemeralStorageTestSuite.java
+new file mode 100644
+index 00000000..10d1d7e4
+--- /dev/null
++++ b/canvas-server/src/test/java/io/canvasmc/canvas/world/EphemeralStorageTestSuite.java
+@@ -0,0 +1,284 @@
++package io.canvasmc.canvas.world;
++
++import static org.junit.jupiter.api.Assertions.*;
++import static org.mockito.Mockito.*;
++
++import ca.spottedleaf.moonrise.patches.chunk_system.io.MoonriseRegionFileIO;
++import ca.spottedleaf.moonrise.patches.chunk_system.io.datacontroller.ChunkDataController;
++import ca.spottedleaf.moonrise.patches.chunk_system.io.datacontroller.EntityDataController;
++import ca.spottedleaf.moonrise.patches.chunk_system.io.datacontroller.PoiDataController;
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkHolderManager;
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.ChunkTaskScheduler;
++import ca.spottedleaf.moonrise.patches.chunk_system.scheduling.NewChunkHolder;
++import java.io.IOException;
++import java.lang.reflect.Field;
++import java.lang.reflect.Method;
++import java.nio.file.Files;
++import java.nio.file.Path;
++import java.util.concurrent.atomic.AtomicReference;
++import net.minecraft.SharedConstants;
++import net.minecraft.core.HolderLookup;
++import net.minecraft.nbt.CompoundTag;
++import net.minecraft.server.Bootstrap;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.world.level.chunk.storage.RegionFileStorage;
++import net.minecraft.world.level.storage.SavedDataStorage;
++import org.junit.jupiter.api.BeforeAll;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++class EphemeralStorageTestSuite {
++    @TempDir Path directory;
++
++    @BeforeAll
++    static void bootstrap() {
++        SharedConstants.tryDetectVersion();
++        Bootstrap.bootStrap();
++    }
++
++    private static void field(Object target, String name, Object value) throws Exception {
++        Field field = target.getClass().getDeclaredField(name);
++        field.setAccessible(true);
++        field.set(target, value);
++    }
++
++    private static ServerLevel world(boolean ephemeral) {
++        ServerLevel world = mock(ServerLevel.class);
++        when(world.canvas$isEphemeral()).thenReturn(ephemeral);
++        when(world.dimension()).thenReturn(net.minecraft.world.level.Level.OVERWORLD);
++        // WorldUtil uses the Bukkit name; use a CraftWorld mock for that native getter.
++        org.bukkit.craftbukkit.CraftWorld craftWorld = mock(org.bukkit.craftbukkit.CraftWorld.class);
++        when(craftWorld.getName()).thenReturn("ephemeral-test");
++        when(world.getWorld()).thenReturn(craftWorld);
++        return world;
++    }
++
++    @Test
++    @SuppressWarnings({"unchecked", "rawtypes"})
++    void ticketlessDispatchRunsOnExistingQueueAndRetiresWithoutLoadingOrTickets() throws Exception {
++        ServerLevel world = world(true);
++        var regioniser = mock(io.papermc.paper.threadedregions.ThreadedRegionizer.class);
++        field(world, "regioniser", regioniser);
++        var worldTasks = new io.papermc.paper.threadedregions.RegionizedTaskQueue.WorldRegionTaskData(world);
++        field(world, "taskQueueRegionData", worldTasks);
++        var data = mock(io.papermc.paper.threadedregions.TickRegions.TickRegionData.class);
++        var region = mock(io.papermc.paper.threadedregions.ThreadedRegionizer.ThreadedRegion.class);
++        var queues = new io.papermc.paper.threadedregions.RegionizedTaskQueue.RegionTaskQueueData(worldTasks, data);
++        when(regioniser.getRegionAtSynchronised(12, 13)).thenReturn(region);
++        when(region.getData()).thenReturn(data);
++        when(data.getTaskQueueData()).thenReturn(queues);
++        var queue = new io.papermc.paper.threadedregions.RegionizedTaskQueue();
++        var executions = new java.util.concurrent.atomic.AtomicInteger();
++        queue.queueExistingTickTask(world, 12, 13, executions::incrementAndGet, () -> fail("Live region retired"));
++        assertEquals(0, executions.get());
++        assertTrue(queues.executeTickTask());
++        assertEquals(1, executions.get());
++
++        var retired = new java.util.concurrent.CompletableFuture<Void>();
++        queue.queueExistingTickTask(world, 12, 13, () -> fail("Retired task ran"), () -> retired.complete(null));
++        queues.retireExistingTasks();
++        retired.get(5, java.util.concurrent.TimeUnit.SECONDS);
++        when(regioniser.getRegionAtSynchronised(12, 13)).thenReturn(null);
++        var absent = new java.util.concurrent.CompletableFuture<Void>();
++        queue.queueExistingTickTask(world, 12, 13, () -> fail("Absent region ran"), () -> absent.complete(null));
++        absent.get(5, java.util.concurrent.TimeUnit.SECONDS);
++        verify(world, never()).moonrise$getChunkTaskScheduler();
++        verify(world, never()).getChunkSource();
++    }
++
++    private static ChunkTaskScheduler scheduler(ServerLevel world) throws Exception {
++        ChunkTaskScheduler scheduler = mock(ChunkTaskScheduler.class);
++        field(scheduler, "world", world);
++        field(scheduler, "ioExecutor", mock(io.canvasmc.canvas.world.chunk.ChunkSystemExecutor.class));
++        return scheduler;
++    }
++
++    @Test
++    void allRegionControllersDiscardWritesAndReadsWithoutTouchingStorage() throws Exception {
++        ServerLevel world = world(true);
++        ChunkTaskScheduler scheduler = scheduler(world);
++        EntityDataController.EntityRegionFileStorage entities = mock(EntityDataController.EntityRegionFileStorage.class);
++        var controllers = new MoonriseRegionFileIO.RegionDataController[] {
++            new ChunkDataController(world, scheduler), new PoiDataController(world, scheduler),
++            new EntityDataController(entities, scheduler)
++        };
++        for (var controller : controllers) {
++            var write = controller.startWrite(12, -13, new CompoundTag());
++            assertNull(write.output());
++            assertNull(write.write());
++            assertNull(write.input());
++            controller.finishWrite(12, -13, write);
++            var read = controller.readData(12, -13);
++            assertEquals(MoonriseRegionFileIO.RegionDataController.ReadData.ReadResult.NO_DATA, read.result());
++            assertNull(controller.finishRead(12, -13, read));
++            assertEquals(0, controller.getTotalWorkingTasks());
++        }
++        verifyNoInteractions(entities);
++        verify(world, never()).getChunkSource();
++        verify(world, never()).getPoiManager();
++    }
++
++    @Test
++    void normalControllersStillDelegateToStorage() throws Exception {
++        ServerLevel world = world(false);
++        ChunkTaskScheduler scheduler = scheduler(world);
++        EntityDataController.EntityRegionFileStorage storage = mock(EntityDataController.EntityRegionFileStorage.class);
++        for (var original : new MoonriseRegionFileIO.RegionDataController[] {
++            new ChunkDataController(world, scheduler), new PoiDataController(world, scheduler),
++            new EntityDataController(storage, scheduler)
++        }) {
++            var controller = spy(original);
++            doReturn(storage).when(controller).getCache();
++            controller.startWrite(12, -13, null);
++            controller.readData(12, -13);
++        }
++        verify(storage, times(3)).moonrise$startWrite(12, -13, null);
++        verify(storage, times(3)).moonrise$readData(12, -13);
++    }
++
++    @Test
++    void directRegionStorageCannotImportOverwriteOrDeleteExistingContent() throws Exception {
++        var info = new net.minecraft.world.level.chunk.storage.RegionStorageInfo("test", net.minecraft.world.level.Level.OVERWORLD, "entities");
++        Path folder = directory.resolve("existing");
++        var position = new net.minecraft.world.level.ChunkPos(0, 0);
++        CompoundTag original = new CompoundTag();
++        original.putString("sentinel", "unchanged");
++        try (var storage = new RegionFileStorage(info, folder, false)) {
++            storage.write(position, original);
++        }
++        Path file = folder.resolve("r.0.0.mca");
++        byte[] before = Files.readAllBytes(file);
++        try (var storage = new RegionFileStorage(info, folder, false, true)) {
++            assertNull(storage.read(position));
++            var visitor = mock(net.minecraft.nbt.StreamTagVisitor.class);
++            storage.scanChunk(position, visitor);
++            verifyNoInteractions(visitor);
++            storage.write(position, new CompoundTag());
++            storage.write(position, null);
++            var write = storage.moonrise$startWrite(0, 0, original);
++            storage.moonrise$finishWrite(0, 0, write);
++            assertNull(storage.moonrise$getRegionFileIfExists(0, 0));
++            assertThrows(IllegalStateException.class, () -> storage.getRegionFile(position));
++        }
++        assertArrayEquals(before, Files.readAllBytes(file));
++        try (var storage = new RegionFileStorage(info, folder, false)) {
++            assertEquals(original, storage.read(position));
++        }
++        Path absent = directory.resolve("absent");
++        try (var storage = new RegionFileStorage(info, absent, false, true)) {
++            storage.write(position, original);
++        }
++        assertFalse(Files.exists(absent));
++    }
++
++    @Test
++    void savedDataDoesNotSerializeOrCreateDirectoriesAndStillCloses() throws Exception {
++        Path data = directory.resolve("absent/data");
++        SavedDataStorage storage = new SavedDataStorage(data, null, mock(HolderLookup.Provider.class), true);
++        assertTrue(storage.canvas$isEphemeral());
++        assertNull(storage.get(net.minecraft.world.level.levelgen.WorldGenSettings.TYPE));
++        assertNull(storage.scheduleSave().join());
++        storage.close();
++        assertFalse(Files.exists(data));
++        assertThrows(IllegalStateException.class, storage::scheduleSave);
++        assertThrows(IllegalStateException.class, storage::close);
++        assertFalse(new SavedDataStorage(data, null, mock(HolderLookup.Provider.class)).canvas$isEphemeral());
++    }
++
++    @Test
++    void holderSkipsAllSerializationBeforeLookingAtChunkEntityOrPoiContent() throws Exception {
++        NewChunkHolder holder = mock(NewChunkHolder.class, CALLS_REAL_METHODS);
++        field(holder, "world", world(true));
++        for (Method method : NewChunkHolder.class.getDeclaredMethods()) {
++            if (!java.util.Set.of("saveChunk", "saveEntities", "savePOI").contains(method.getName())) continue;
++            method.setAccessible(true);
++            assertEquals(false, method.invoke(holder, null, true, null), method.getName());
++        }
++    }
++
++    private static Throwable close(ChunkHolderManager manager, boolean first) throws InterruptedException {
++        AtomicReference<Throwable> failure = new AtomicReference<>();
++        Thread thread = new io.papermc.paper.threadedregions.RegionShutdownThread("ephemeral-close-test") {
++            @Override public void run() {
++                try { manager.close(false, true, first, !first, false); }
++                catch (Throwable thrown) { failure.set(thrown); }
++            }
++        };
++        thread.start();
++        thread.join(10000);
++        assertFalse(thread.isAlive(), "native close must not hang");
++        return failure.get();
++    }
++
++    @Test
++    void schedulerHaltFailureIsNotReportedAsSuccess() throws Exception {
++        ServerLevel world = world(true);
++        ChunkTaskScheduler scheduler = scheduler(world);
++        ChunkHolderManager manager = mock(ChunkHolderManager.class, CALLS_REAL_METHODS);
++        field(manager, "world", world);
++        field(manager, "taskScheduler", scheduler);
++        assertInstanceOf(IllegalStateException.class, close(manager, true));
++        verify(scheduler, never()).setShutdown(true);
++    }
++
++    @Test
++    void ioHaltFailureIsNotReportedAsSuccess() throws Exception {
++        ServerLevel world = world(true);
++        ChunkTaskScheduler scheduler = scheduler(world);
++        controllers(world);
++        ChunkHolderManager manager = mock(ChunkHolderManager.class, CALLS_REAL_METHODS);
++        field(manager, "world", world);
++        field(manager, "taskScheduler", scheduler);
++        assertInstanceOf(IllegalStateException.class, close(manager, false));
++        verify(scheduler, never()).setShutdown(true);
++    }
++
++    private static java.util.List<MoonriseRegionFileIO.RegionDataController> controllers(ServerLevel world) {
++        var chunks = mock(ChunkDataController.class);
++        var entities = mock(EntityDataController.class);
++        var poi = mock(PoiDataController.class);
++        when(world.moonrise$getChunkDataController()).thenReturn(chunks);
++        when(world.moonrise$getEntityChunkDataController()).thenReturn(entities);
++        when(world.moonrise$getPoiChunkDataController()).thenReturn(poi);
++        return java.util.List.of(chunks, entities, poi);
++    }
++
++    @Test
++    void cacheCloseFailuresAreAggregatedAndAllCachesAreAttempted() throws Exception {
++        ServerLevel world = world(true);
++        ChunkTaskScheduler scheduler = scheduler(world);
++        when(scheduler.haltIO(eq(true), anyLong())).thenReturn(true);
++        var controllers = controllers(world);
++        for (var controller : controllers) {
++            RegionFileStorage storage = mock(RegionFileStorage.class);
++            when(controller.getCache()).thenReturn(storage);
++            doThrow(new IOException("injected close failure")).when(storage).close();
++        }
++        ChunkHolderManager manager = mock(ChunkHolderManager.class, CALLS_REAL_METHODS);
++        field(manager, "world", world);
++        field(manager, "taskScheduler", scheduler);
++        Throwable failure = close(manager, false);
++        assertInstanceOf(java.io.UncheckedIOException.class, failure);
++        assertEquals(2, failure.getSuppressed().length);
++        for (var controller : controllers) verify(controller.getCache()).close();
++        verify(scheduler, never()).setShutdown(true);
++    }
++
++    @Test
++    void unloadCompletionCannotTurnFailureIntoSuccessOrNotifyTwice() throws Exception {
++        ServerLevel world = world(true);
++        var tickets = new io.canvasmc.canvas.util.ticket.TicketHolder<io.canvasmc.canvas.util.ticket.UnloadTicket>();
++        var results = new java.util.ArrayList<io.canvasmc.canvas.WorldUnloadResult>();
++        tickets.propagate(new io.canvasmc.canvas.util.ticket.UnloadTicket(results::add, false));
++        field(world, "canvas$unloadTicket", tickets);
++        var thread = mock(io.canvasmc.canvas.threadedregions.WorldShutdownThread.class, CALLS_REAL_METHODS);
++        field(thread, "level", world);
++        field(thread, "canvas$callbackCompleted", new java.util.concurrent.atomic.AtomicBoolean());
++        Method complete = thread.getClass().getDeclaredMethod("canvas$completeUnload", io.canvasmc.canvas.WorldUnloadResult.class);
++        complete.setAccessible(true);
++        complete.invoke(thread, io.canvasmc.canvas.WorldUnloadResult.FAIL_RESOURCE_CLOSE);
++        complete.invoke(thread, io.canvasmc.canvas.WorldUnloadResult.SUCCESS);
++        assertEquals(java.util.List.of(io.canvasmc.canvas.WorldUnloadResult.FAIL_RESOURCE_CLOSE), results);
++        assertTrue(tickets.isPresent(), "failed closure must remain unloading, not permit a second native unload");
++    }
++}

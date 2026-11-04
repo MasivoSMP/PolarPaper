@@ -32,6 +32,7 @@ public class PolarWriter {
     }
 
     public static void write(PolarSource source, PolarWorld world, Config config) {
+        if (config.ephemeral()) throw new IllegalArgumentException("Ephemeral worlds cannot be saved or exported");
         write(source, world, PolarDataConverter.DEFAULT, config.compression(), config.compressionLevel());
     }
 
@@ -66,6 +67,9 @@ public class PolarWriter {
     public static CompletableFuture<Void> convertAndWrite(PolarSource source, World world,
                                                           PolarWorldAccess worldAccess, Config config, BlockSelector selector,
                                                           Collection<PolarChunk> chunks, boolean loadChunks, byte[] userData) {
+        if (config.ephemeral() || world.getGenerator() instanceof live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) {
+            return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot be saved or exported"));
+        }
         boolean saveLight = config.saveLight();
         PolarWorld.CompressionType compression = config.compression();
         int compressionLevel = config.compressionLevel();

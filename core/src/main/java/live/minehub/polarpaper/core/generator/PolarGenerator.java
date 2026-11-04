@@ -22,6 +22,7 @@ public abstract class PolarGenerator extends ChunkGenerator {
     private final PolarWorldAccess worldAccess;
 
     public PolarGenerator(Config config, @Nullable PolarSource source, PolarWorldAccess worldAccess) {
+        if (config.ephemeral() && source != null) throw new IllegalArgumentException("Ephemeral worlds cannot have a source");
         this.config = config;
         this.source = source;
         this.worldAccess = worldAccess;
@@ -37,6 +38,9 @@ public abstract class PolarGenerator extends ChunkGenerator {
     }
 
     public void setConfig(Config config) {
+        if (this.config.ephemeral() != config.ephemeral()) {
+            throw new IllegalArgumentException("ephemeral cannot be changed on a loaded world");
+        }
         this.config = config;
     }
 
@@ -45,6 +49,7 @@ public abstract class PolarGenerator extends ChunkGenerator {
     }
 
     public void setSource(@Nullable PolarSource source) {
+        if (config.ephemeral() && source != null) throw new IllegalArgumentException("Ephemeral worlds cannot have a source");
         this.source = source;
     }
 
@@ -99,7 +104,7 @@ public abstract class PolarGenerator extends ChunkGenerator {
 
     @Override
     public @Nullable Location getFixedSpawnLocation(World world, Random random) {
-        Location loc = getConfig().spawn();
+        Location loc = getConfig().spawn().clone();
         loc.setWorld(world);
         return loc;
     }

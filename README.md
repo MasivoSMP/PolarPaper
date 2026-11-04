@@ -30,6 +30,12 @@ Polar is most useful when the whole world is mostly within render distance. The 
 
 If you need large worlds, it's likely Anvil (the default world format) will be more useful.
 
+## Ephemeral worlds (Paper / patched Canvas)
+
+For dynamically generated, disposable void worlds, see [EPHEMERAL_WORLDS.md](EPHEMERAL_WORLDS.md).
+These worlds cannot be saved or exported. Plugins explicitly destroy old chunks and, finally, the world.
+Canvas 26.2 requires the included server patch; stock Canvas and pure Folia are rejected.
+
 ## Permissions
 Permission nodes are simply `polarpaper.<subcommand>`, for example: `polarpaper.info` for `/polar info`
 

@@ -69,6 +69,17 @@ public class UnloadCommand extends PolarCmd {
             return CompletableFuture.completedFuture(false);
         }
         Config config = generator.getConfig();
+        if (config.ephemeral()) {
+            if (saveOverrided && save) {
+                ctx.getSource().getSender().sendMessage(Component.text("Ephemeral worlds cannot be saved", NamedTextColor.RED));
+                return CompletableFuture.completedFuture(false);
+            }
+            return live.minehub.polarpaper.Polar.destroyWorld(bukkitWorld).handle((ignored, error) -> {
+                ctx.getSource().getSender().sendMessage(Component.text(error == null ? "Ephemeral world destroyed" : "Could not destroy ephemeral world: " + error.getMessage(),
+                        error == null ? NamedTextColor.AQUA : NamedTextColor.RED));
+                return error == null;
+            });
+        }
 
         boolean shouldSave;
         if (saveOverrided) {
