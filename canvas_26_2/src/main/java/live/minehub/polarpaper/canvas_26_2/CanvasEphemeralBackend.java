@@ -2,6 +2,7 @@ package live.minehub.polarpaper.canvas_26_2;
 
 import live.minehub.polarpaper.core.config.Config;
 import live.minehub.polarpaper.core.ephemeral.*;
+import live.minehub.polarpaper.core.ephemeral.edit.*;
 import live.minehub.polarpaper.core.world.PolarWorldAccess;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.server.level.ServerLevel;
@@ -24,6 +25,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class CanvasEphemeralBackend {
     private static final Set<UUID> REQUESTS = ConcurrentHashMap.newKeySet();
     private static Method destroy;
+    private static Method execute;
     private static boolean registered;
     private CanvasEphemeralBackend() {}
 
@@ -31,7 +33,8 @@ public final class CanvasEphemeralBackend {
         if (destroy != null) return;
         try {
             Class<?> bridge = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle");
-            if (!bridge.getMethod("contractVersion").invoke(null).equals(1)) throw new IllegalStateException("Incompatible native contract");
+            int version = (int) bridge.getMethod("contractVersion").invoke(null);
+            if (version != 1 && version != 2) throw new IllegalStateException("Incompatible native contract");
             Class.forName("io.canvasmc.canvas.world.EphemeralWorldGenerator");
             destroy = bridge.getMethod("destroyChunk", ServerLevel.class, int.class, int.class);
         } catch (ReflectiveOperationException error) {
@@ -40,6 +43,10 @@ public final class CanvasEphemeralBackend {
     }
 
     public static World create(Plugin plugin, NamespacedKey key, Config config, PolarWorldAccess access) throws Exception {
+        return create(plugin, key, config, access, null, ChunkEditingOptions.DEFAULT);
+    }
+
+    public static World create(Plugin plugin, NamespacedKey key, Config config, PolarWorldAccess access, ChunkContentProvider provider, ChunkEditingOptions options) throws Exception {
         verifySupport();
         if (!registered) {
             Bukkit.getPluginManager().registerEvents(new UnloadListener(), plugin);
@@ -48,8 +55,9 @@ public final class CanvasEphemeralBackend {
         var server = ((CraftServer) Bukkit.getServer()).getServer();
         var dimension = CraftNamespacedKey.toResourceKey(Registries.DIMENSION, key);
         EphemeralStorage.reserve(plugin, server.storageSource.getDimensionPath(dimension), key.toString());
+        var generator = new CanvasGenerator(config, access, provider, options);
         World world = WorldCreator.ofKey(key).type(config.worldType()).environment(config.environment())
-                .generator(new CanvasGenerator(config, access)).createWorld();
+                .generator(generator).biomeProvider(generator.contentBiomeProvider()).createWorld();
         if (world == null) throw new IllegalStateException("Canvas did not create " + key);
         world.setAutoSave(false);
         world.setDifficulty(config.difficulty());
@@ -70,6 +78,25 @@ public final class CanvasEphemeralBackend {
             verifySupport();
             @SuppressWarnings("unchecked") var future = (CompletableFuture<String>) destroy.invoke(null, ((CraftWorld) world).getHandle(), x, z);
             return future.thenApply(DestroyChunkResult::valueOf);
+        } catch (ReflectiveOperationException error) { return CompletableFuture.failedFuture(error); }
+    }
+
+    public static synchronized void verifyEditingSupport() {
+        verifySupport();
+        if (execute != null) return;
+        try {
+            execute = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle")
+                    .getMethod("executeOnExistingRegion", ServerLevel.class, int.class, int.class, Runnable.class);
+        } catch (ReflectiveOperationException error) {
+            throw new UnsupportedOperationException("Chunk editing requires Canvas ephemeral native contract 2; rebuild with the updated server patch", error);
+        }
+    }
+
+    public static CompletableFuture<Boolean> executeOnExistingRegion(World world, int x, int z, Runnable action) {
+        try {
+            verifyEditingSupport();
+            @SuppressWarnings("unchecked") var future = (CompletableFuture<Boolean>) execute.invoke(null, ((CraftWorld) world).getHandle(), x, z, action);
+            return future;
         } catch (ReflectiveOperationException error) { return CompletableFuture.failedFuture(error); }
     }
 
@@ -100,6 +127,6 @@ public final class CanvasEphemeralBackend {
     }
 
     private static final class CanvasGenerator extends EphemeralGenerator implements io.canvasmc.canvas.world.EphemeralWorldGenerator {
-        CanvasGenerator(Config config, PolarWorldAccess access) { super(config, access); }
+        CanvasGenerator(Config config, PolarWorldAccess access, ChunkContentProvider provider, ChunkEditingOptions options) { super(config, access, provider, options); }
     }
 }

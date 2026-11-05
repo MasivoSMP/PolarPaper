@@ -5,7 +5,8 @@ Pure Folia, stock Canvas and other versions are explicitly rejected before ephem
 The implementation uses Paper/Moonrise internals; a future Paper change can require an adapter update.
 Live-tested on Paper **26.3 build 241**. The 26.1.2/26.2 adapters compile but have not yet been tested on live servers.
 
-An ephemeral world starts **void**, without a template, source, retained `PolarWorld`, or Polar chunks.
+An ephemeral world starts **void** by default, without a template, source, retained `PolarWorld`, or Polar chunks.
+An optional pure content provider or explicit publication can supply its first-generation blocks and biomes.
 It keeps generated content in RAM until your plugin explicitly destroys it. There is no automatic
 discard option and no force-unload option. Ordinary Polar worlds are unchanged.
 
@@ -16,10 +17,11 @@ Install `server-patches/canvas-26.2-ephemeral.patch` against Canvas commit
 Stock Canvas forces regional saving even for `unloadWorldAsync(..., false, ...)`, including dirty
 protochunks and POI-only holders, and can log resource-close failures without failing its callback.
 The patch adds immutable no-content-IO guards and checked closure, not a temporary disk fallback.
-The plugin verifies native lifecycle contract version 1 before creating an ephemeral Canvas world.
+The plugin verifies native lifecycle contract version 1 or 2 before creating an ephemeral Canvas world;
+the editing APIs require **version 2**, included in the updated patch.
 Ordinary Canvas Polar worlds keep their existing behavior.
-Live-tested on that patched Canvas revision: **28 assertions passed with two regional tick threads**;
-Paper 26.3 regression: **41 assertions passed**.
+Live-tested on that patched Canvas revision: **84 assertions with two regional tick threads**;
+Paper 26.3: **97 assertions**. Polar has 22 unit tests; the native patch has 11.
 
 Chunk destruction is dispatched to the existing owning region using a native **ticketless** queue:
 it neither loads absent chunks nor adds a scheduler ticket that would block its own unload. Native
@@ -92,10 +94,103 @@ expire or demote; `BLOCKED` is not automatically retried. Technical failures com
 Duplicate in-flight requests for the same chunk/world share an operation. Batches deduplicate coordinates
 and return immutable per-coordinate results, not an atomic all-or-nothing transaction.
 
-On revisiting a successfully destroyed chunk, normal void generation runs again; old blocks, block
+On revisiting a successfully destroyed chunk, generation runs again (void unless a provider supplies content); old blocks, block
 entities and entities do not return. Without explicit destruction, chunk content remains in RAM.
 Success means the server unload completed and Polar released its ownership, **not** immediate GC or
 removal of references retained by your plugin, players, third-party plugins or the JVM.
+
+## Prepared generation, patches and schematics
+
+The additional models live in `live.minehub.polarpaper.core.ephemeral.edit.*`. These APIs are
+**only for ephemeral worlds**; they do not modify ordinary Polar generation. No new YAML flags are needed.
+
+### Publish before generation
+
+```java
+PreparedChunk payload = PreparedChunk.builder(world.getMinHeight(), world.getMaxHeight())
+        .setRegion(0, 64, 0, 16, 65, 16, "minecraft:stone")
+        .fillBiome("minecraft:desert")
+        .build();
+Polar.publishChunk(world, 100, 200, payload).thenCompose(result -> {
+    if (result != PublishChunkResult.PUBLISHED) throw new IllegalStateException(result.toString());
+    return Polar.generatePublishedChunk(world, 100, 200);
+});
+```
+
+Publication accepts immutable blocks and quart-cell biomes covering the world's exact height;
+omitted blocks are air. It **does not load or generate** the chunk. Explicit generation completes
+after native full-chunk loading, not after a client acknowledgment. Publication uses native holder locks:
+already existing full chunks return `CHUNK_EXISTS`; even a generation-halo/proto holder conservatively
+returns `GENERATION_STARTED`. Other outcomes are `ALREADY_PUBLISHED`, `BUSY`, `WORLD_DESTROYING`
+and `CAPACITY_EXCEEDED`. There is no overwrite operation. `publishChunks` returns per-coordinate results.
+`discardPublishedChunk` releases only unused publication data and returns `BUSY` once a holder exists.
+Loading consumes the payload. Successful chunk destruction invalidates pending content too;
+blocked destruction preserves it. Publication is not a replacement for patching an existing chunk.
+
+The creation overload `createEphemeralWorld(name, config, provider, editingOptions)` optionally accepts
+a `ChunkContentProvider`. Its `prepare(ChunkGenerationContext)` returns a `PreparedChunk` or `null`
+for void. It must be **pure, deterministic and concurrency-safe**: no live-world access, IO, waits or
+reentrant Polar operations. Providers can be recomputed after bounded cache eviction, including
+neighbor-biome queries. Exceptions fail native generation rather than silently generating void.
+Priority is explicit publication, then provider, then void. Payloads contain no entities, inventory,
+NBT or imported ticks; block entities start with normal default state.
+
+### Edit existing chunks
+
+```java
+ChunkPatch patch = ChunkPatch.builder()
+        .setRegion(0, 64, 0, 16, 65, 16, "minecraft:deepslate")
+        .setBlock(2, 65, 2, "minecraft:chest[facing=north]")
+        .build();
+Polar.patchChunk(world, 100, 200, patch, PatchOptions.DEFAULT);
+```
+
+Patch x/z coordinates are local `0..15`; y is absolute. Omitted blocks are unchanged; overlapping
+regions are applied in order, last write wins. `patchChunks` accepts a map or one shared patch plus
+coordinates. Entire inputs are validated before writes. `REQUIRE_LOADED` (default) never loads chunks;
+`LOAD_EXISTING` can reactivate a retained full RAM chunk but never generates missing chunks.
+Generation in progress returns `BUSY`. Results include `APPLIED`, `NOT_LOADED`, `NOT_FOUND`,
+`BUSY`, `BLOCKED`, `WORLD_DESTROYING` and `CAPACITY_EXCEEDED`, with processed-write/entity counts.
+Counts are work performed, not necessarily changed blocks. Technical failure can occur after partial
+writes: `PatchApplicationException` carries progress; `PatchBatchException` retains all settled results
+and errors. There is **no rollback**, cross-chunk atomicity, automatic retry or immediate lighting/client
+settlement guarantee. Normal patches use Bukkit updates without neighbor physics; callers must supply
+valid multipart/support states. Replacing inventory blocks through a normal patch can cause ordinary
+block-removal side effects; use `destroyPatch` when clearing without drops is required.
+
+Per-chunk edits are FIFO. Chunk destruction is `BLOCKED` while edits are queued/active; world destruction
+rejects new work, skips unstarted edits and drains active operations. Cancelling returned futures does not
+cancel their native work. Work is budgeted per operation/world/global tick on the owning thread.
+`ChunkEditingOptions.DEFAULT` allows 256 publications, 64 MiB estimated pending payload, 256 queued edits
+and 8192 writes per world/tick; `PatchOptions` defaults to 2048 writes per operation/tick. Global limits
+also bound payload/cache bytes, publications, queued metadata, preparation workers and write throughput.
+Estimates are admission limits, **not exact JVM heap measurements**. Reject or retry explicitly when full.
+
+### Patterns and Sponge schematics
+
+`BlockPattern.builder(width, height, length)` creates an immutable block volume (maximum 1,048,576 blocks).
+`pastePattern(world, origin, pattern, PatternOptions)` partitions it into ordinary chunk patches.
+Options mirror local X first, then rotate clockwise by quarter turns, transforming block orientation too.
+Including air replaces the volume; `ignoreAir` overlays only non-air blocks. Origins and bounds use integer
+block coordinates; all volume bounds are min-inclusive/max-exclusive.
+
+`SchematicImporter.read(pathOrStream, targetDataVersion)` imports gzip Sponge `.schem` **v2/v3** with
+bounded NBT expansion, dimension/palette/varint validation and no world edits during import. Run file IO
+off server tick threads. Newer data versions are rejected; older versions warn and are not automatically
+data-fixed. Imported block entities, inventories, entities and biome data are explicitly ignored with
+warnings. `pasteSchematic(..., acknowledgeWarnings)` requires acknowledgment of any warnings and adds
+the schematic's offset to the supplied origin before the pattern transform. Malformed data is rejected.
+
+### Clear a volume without destroying its chunks
+
+`destroyPatch(world, new BlockBounds(minX, minY, minZ, maxX, maxY, maxZ), patchOptions)` clears blocks
+to air without inventory drops, removes block entities, POIs and pending block/fluid ticks inside the
+clipped volume, and removes non-player entities positioned inside it. A player, or a vehicle/passenger
+relationship extending outside the volume or into an unowned region, blocks that chunk instead of
+deleting outsiders. Outside content and foreign tickets are preserved. Checks repeat between slices;
+movement or technical errors can leave partial progress. Other plugins can subsequently spawn/write/schedule
+new work: this is not a global transaction. Chunks remain allocated; use `destroyChunks` to release an
+entire floor's RAM. The same load policies, queue limits and budgets apply.
 
 ## World destruction and disk ownership
 
@@ -124,7 +219,10 @@ On the next startup, orphan cleanup runs before configured ephemeral worlds are 
 ./gradlew build ephemeralTestPlugin canvasEphemeralTestPlugin
 ```
 
-Unit tests cover configuration validation, immutable results and ownership-safe cleanup. The opt-in
+Unit tests cover configuration validation, immutable models/results, payload limits, schematic validation
+and ownership-safe cleanup. Both live suites additionally exercise publication/generation races, exact
+blocks/biomes, bounded FIFO patches, patterns/orientation/air modes, schematic warnings, volume cleanup,
+provider priority, payload weak references, no content files and closing with active/queued edits. The opt-in
 `build/libs/PolarEphemeralTest.jar` runs lifecycle assertions on a **disposable** Paper server alongside
 the built PolarPaper jar, then stops that server. Never install it on a production server: it creates
 and destroys worlds named `integration_ephemeral` / `integration_persistent`, intentionally cancels an

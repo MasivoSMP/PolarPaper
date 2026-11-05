@@ -39,7 +39,8 @@ public final class CanvasEphemeralIntegrationPlugin extends JavaPlugin {
                 var closing = Polar.destroyWorld(world);
                 check(Polar.destroyChunk(world, 512, 512).join() == DestroyChunkResult.WORLD_DESTROYING, "closing blocks new chunk requests");
                 return closing.thenRun(() -> check(pending.isDone(), "world destruction drains region operations"));
-            }).thenCompose(ignored -> collect(worlds, 0, "detached Canvas world and level collected"))
+             }).thenCompose(ignored -> collect(worlds, 0, "detached Canvas world and level collected"))
+             .thenCompose(ignored -> EditingIntegration.run(this).thenAccept(count -> assertions += count))
             .whenComplete((ignored, failure) -> finish(failure));
     }
 

@@ -2,6 +2,7 @@ package live.minehub.polarpaper;
 
 import live.minehub.polarpaper.core.config.Config;
 import live.minehub.polarpaper.core.ephemeral.*;
+import live.minehub.polarpaper.core.ephemeral.edit.*;
 import live.minehub.polarpaper.nms.VersionUtil;
 import live.minehub.polarpaper.canvas_26_2.CanvasEphemeralBackend;
 import live.minehub.polarpaper.core.util.FoliaUtil;
@@ -21,6 +22,9 @@ final class EphemeralWorlds {
     private static final class State {
         final Path folder;
         final Map<ChunkCoordinates, Operation<DestroyChunkResult>> chunks = new HashMap<>();
+        final Map<ChunkCoordinates, LinkedHashSet<Operation<?>>> edits = new HashMap<>();
+        int editCount;
+        long editBytes;
         boolean destroying;
         Operation<Void> destruction;
         State(Path folder) { this.folder = folder; }
@@ -51,7 +55,13 @@ final class EphemeralWorlds {
     }
 
     static CompletableFuture<World> create(String name, Config config) {
+        return create(name, config, null, ChunkEditingOptions.DEFAULT);
+    }
+
+    static CompletableFuture<World> create(String name, Config config, ChunkContentProvider provider, ChunkEditingOptions options) {
         try {
+            ChunkContentStore.checkNotPreparing();
+            Objects.requireNonNull(options);
             checkSupport();
             if (!config.ephemeral()) throw new IllegalArgumentException("createEphemeralWorld requires ephemeral: true");
             NamespacedKey key = NamespacedKey.fromString(name.toLowerCase(Locale.ROOT).replace(' ', '_'), PolarPaper.getPlugin());
@@ -64,10 +74,10 @@ final class EphemeralWorlds {
                 Config isolated = config.toBuilder().spawn(config.spawn().clone()).gamerules(new HashMap<>(config.gamerules())).build();
                 World world;
                 if (FoliaUtil.isCanvas()) {
-                    world = CanvasEphemeralBackend.create(PolarPaper.getPlugin(), key, isolated, VersionUtil.getPolarFeaturesWorldAccess());
+                    world = CanvasEphemeralBackend.create(PolarPaper.getPlugin(), key, isolated, VersionUtil.getPolarFeaturesWorldAccess(), provider, options);
                 } else {
-                    EphemeralGenerator generator = new EphemeralGenerator(isolated, VersionUtil.getPolarFeaturesWorldAccess());
-                    WorldCreator creator = WorldCreator.ofKey(key).type(config.worldType()).environment(config.environment()).generator(generator);
+                    EphemeralGenerator generator = new EphemeralGenerator(isolated, VersionUtil.getPolarFeaturesWorldAccess(), provider, options);
+                    WorldCreator creator = WorldCreator.ofKey(key).type(config.worldType()).environment(config.environment()).generator(generator).biomeProvider(generator.contentBiomeProvider());
                     world = VersionUtil.createNoSaveLevel(creator, isolated.spawn(), config.difficulty(), isolated.gamerules(), config.time()).join();
                 }
                 if (world == null) throw new IllegalStateException("Server did not create ephemeral world " + key);
@@ -89,6 +99,7 @@ final class EphemeralWorlds {
     }
 
     private static State state(World world) {
+        ChunkContentStore.checkNotPreparing();
         checkSupport();
         if (!isEphemeral(world)) throw new IllegalArgumentException("World is not ephemeral");
         return STATES.computeIfAbsent(world.getUID(), id -> new State(world.getWorldFolder().toPath()));
@@ -100,6 +111,7 @@ final class EphemeralWorlds {
             ChunkCoordinates coordinates = new ChunkCoordinates(x, z);
             synchronized (state) {
                 if (state.destroying) return CompletableFuture.completedFuture(DestroyChunkResult.WORLD_DESTROYING);
+                if (state.edits.containsKey(coordinates)) return CompletableFuture.completedFuture(DestroyChunkResult.BLOCKED);
                 var existing = state.chunks.get(coordinates);
                 if (existing != null && !existing.task.isDone()) return existing.result;
                 CompletableFuture<DestroyChunkResult> task = onMain(() -> {
@@ -111,7 +123,11 @@ final class EphemeralWorlds {
                     }
                     if (FoliaUtil.isCanvas()) return CanvasEphemeralBackend.destroyChunk(world, x, z);
                     return CompletableFuture.completedFuture(PaperEphemeralChunks.destroy(((CraftWorld) world).getHandle(), x, z));
-                }).thenCompose(future -> future);
+                }).thenCompose(future -> future).thenApply(result -> {
+                    if (result == DestroyChunkResult.DESTROYED || result == DestroyChunkResult.ALREADY_ABSENT)
+                        ((EphemeralGenerator) world.getGenerator()).content().discard(coordinates);
+                    return result;
+                });
                 Operation<DestroyChunkResult> operation = new Operation<>(task);
                 state.chunks.put(coordinates, operation);
                 operation.task.whenComplete((result, error) -> { synchronized (state) { state.chunks.remove(coordinates, operation); } });
@@ -142,7 +158,11 @@ final class EphemeralWorlds {
             synchronized (state) {
                 if (state.destruction != null && !state.destruction.task.isCompletedExceptionally()) return state.destruction.result;
                 state.destroying = true;
-                CompletableFuture<?> pending = CompletableFuture.allOf(state.chunks.values().stream().map(operation -> operation.task).toArray(CompletableFuture[]::new));
+                ((EphemeralGenerator) world.getGenerator()).content().startClosing();
+                var operations = new ArrayList<CompletableFuture<?>>();
+                state.chunks.values().forEach(operation -> operations.add(operation.task));
+                state.edits.values().forEach(edits -> edits.forEach(operation -> operations.add(operation.task)));
+                CompletableFuture<?> pending = CompletableFuture.allOf(operations.toArray(CompletableFuture[]::new));
                 state.destruction = new Operation<>(pending.handle((result, error) -> null).thenCompose(ignored -> onMain(() -> {
                     if (Bukkit.getWorld(world.getUID()) != world) return CompletableFuture.<Void>completedFuture(null);
                     if (FoliaUtil.isCanvas()) return CanvasEphemeralBackend.unloadWorld(world);
@@ -152,6 +172,7 @@ final class EphemeralWorlds {
                     if (Bukkit.getWorld(world.getUID()) == world) throw new IllegalStateException("World is still registered after unload");
                     Polar.stopAutoSaveTask(world.getKey());
                     ((EphemeralGenerator) world.getGenerator()).release();
+                    EphemeralEdits.release(world.getUID());
                     EphemeralStorage.cleanup(PolarPaper.getPlugin(), state.folder);
                     STATES.remove(world.getUID(), state);
                     return null;
@@ -162,7 +183,7 @@ final class EphemeralWorlds {
     }
 
     /** Always enqueue: callbacks/events may otherwise reenter a native unload in progress. */
-    private static <T> CompletableFuture<T> onMain(Callable<T> action) {
+    static <T> CompletableFuture<T> onMain(Callable<T> action) {
         CompletableFuture<T> future = new CompletableFuture<>();
         try {
             Bukkit.getGlobalRegionScheduler().execute(PolarPaper.getPlugin(), () -> {
@@ -171,5 +192,71 @@ final class EphemeralWorlds {
             });
         } catch (Throwable error) { future.completeExceptionally(error); }
         return future;
+    }
+
+    private static int globalEdits;
+    private static long globalEditBytes;
+
+    /** Admission, FIFO and destruction share the same lock; cancelling returned futures cannot release a lease. */
+    static <T> CompletableFuture<T> edit(World world, ChunkCoordinates coordinate, long bytes, java.util.function.Supplier<CompletableFuture<T>> action,
+                                       T busy, T closing, T capacity) {
+        try {
+            State state = state(world);
+            var store = ((EphemeralGenerator) world.getGenerator()).content();
+            synchronized (state) {
+                if (state.destroying) return CompletableFuture.completedFuture(closing);
+                var destroy = state.chunks.get(coordinate);
+                if (destroy != null && !destroy.task.isDone()) return CompletableFuture.completedFuture(busy);
+                if (state.editCount >= store.options().maxQueuedEdits() || bytes > store.options().maxPendingBytes() - state.editBytes - store.pendingBytes())
+                    return CompletableFuture.completedFuture(capacity);
+                synchronized (STATES) {
+                    if (globalEdits >= 1024 || bytes > 128L * 1024 * 1024 - globalEditBytes) return CompletableFuture.completedFuture(capacity);
+                    globalEdits++; globalEditBytes += bytes;
+                }
+                LinkedHashSet<Operation<?>> queue = state.edits.computeIfAbsent(coordinate, ignored -> new LinkedHashSet<>());
+                CompletableFuture<?> previous = queue.isEmpty() ? CompletableFuture.completedFuture(null) : queue.getLast().task;
+                CompletableFuture<T> task = new CompletableFuture<>();
+                Operation<T> operation = new Operation<>(task);
+                queue.add(operation); state.editCount++; state.editBytes += bytes;
+                task.whenComplete((value, error) -> {
+                    synchronized (state) {
+                        queue.remove(operation); if (queue.isEmpty()) state.edits.remove(coordinate, queue);
+                        state.editCount--; state.editBytes -= bytes;
+                    }
+                    synchronized (STATES) { globalEdits--; globalEditBytes -= bytes; }
+                });
+                previous.handle((value, error) -> null).thenCompose(ignored -> onMain(() -> {
+                    synchronized (state) {
+                        if (state.destroying) return CompletableFuture.completedFuture(closing);
+                        if (Bukkit.getWorld(world.getUID()) != world) {
+                            STATES.remove(world.getUID(), state);
+                            return CompletableFuture.completedFuture(closing);
+                        }
+                    }
+                    return action.get();
+                })).thenCompose(future -> future).whenComplete((value, error) -> {
+                    if (error == null) task.complete(value); else task.completeExceptionally(error);
+                });
+                return operation.result;
+            }
+        } catch (Throwable failure) { return CompletableFuture.failedFuture(failure); }
+    }
+
+    static <T> CompletableFuture<T> admission(World world, ChunkCoordinates coordinate, Callable<T> action, T busy, T closing) {
+        return admission(world, coordinate, 0, action, busy, closing, busy);
+    }
+
+    static <T> CompletableFuture<T> admission(World world, ChunkCoordinates coordinate, long bytes, Callable<T> action, T busy, T closing, T capacity) {
+        try {
+            State state = state(world);
+            synchronized (state) {
+                if (state.destroying) return CompletableFuture.completedFuture(closing);
+                if (state.edits.containsKey(coordinate)) return CompletableFuture.completedFuture(busy);
+                return edit(world, coordinate, bytes, () -> {
+                    try { return CompletableFuture.completedFuture(action.call()); }
+                    catch (Throwable failure) { return CompletableFuture.failedFuture(failure); }
+                }, busy, closing, capacity);
+            }
+        } catch (Throwable failure) { return CompletableFuture.failedFuture(failure); }
     }
 }

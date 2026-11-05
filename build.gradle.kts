@@ -74,6 +74,7 @@ tasks.named("build") {
 // Opt-in test plugin: run only on a disposable Paper server, never a production server.
 val compileEphemeralTestPlugin = tasks.register<JavaCompile>("compileEphemeralTestPlugin") {
     source(fileTree("src/integrationTest/java"))
+    source(fileTree("src/sharedIntegrationTest/java"))
     classpath = sourceSets.main.get().output + sourceSets.main.get().compileClasspath
     destinationDirectory.set(layout.buildDirectory.dir("classes/ephemeralTestPlugin"))
     options.release.set(25)
@@ -81,6 +82,7 @@ val compileEphemeralTestPlugin = tasks.register<JavaCompile>("compileEphemeralTe
 
 val compileCanvasEphemeralTestPlugin = tasks.register<JavaCompile>("compileCanvasEphemeralTestPlugin") {
     source(fileTree("src/canvasIntegrationTest/java"))
+    source(fileTree("src/sharedIntegrationTest/java"))
     classpath = sourceSets.main.get().compileClasspath + sourceSets.main.get().output
     destinationDirectory.set(layout.buildDirectory.dir("classes/canvasEphemeralTestPlugin"))
     options.release.set(25)

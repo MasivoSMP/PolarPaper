@@ -47,7 +47,8 @@ public final class EphemeralIntegrationPlugin extends JavaPlugin implements List
                         return Polar.destroyWorld(world).thenRun(() -> check(pending.isDone(), "world destruction drains in-flight chunk operation"));
                     })
                     .thenCompose(ignored -> normalWorldRegression())
-                    .thenCompose(ignored -> collectReleased(released, 0, "old world, level, chunk, holder and entity weak references cleared"));
+                    .thenCompose(ignored -> collectReleased(released, 0, "old world, level, chunk, holder and entity weak references cleared"))
+                    .thenCompose(ignored -> EditingIntegration.run(this).thenAccept(count -> assertions += count));
         }).whenComplete((ignored, error) -> {
             if (error == null) {
                 getLogger().info("EPHEMERAL_INTEGRATION_PASS assertions=" + assertions);

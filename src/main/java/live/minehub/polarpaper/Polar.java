@@ -2,6 +2,8 @@ package live.minehub.polarpaper;
 
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import live.minehub.polarpaper.core.config.Config;
+import live.minehub.polarpaper.core.ephemeral.*;
+import live.minehub.polarpaper.core.ephemeral.edit.*;
 import live.minehub.polarpaper.core.generator.ChunkUtils;
 import live.minehub.polarpaper.core.generator.PolarGenerator;
 import live.minehub.polarpaper.core.generator.PolarStreamLoader;
@@ -48,6 +50,41 @@ public class Polar {
     private Polar() {
 
     }
+
+    /** Provider is concurrent, deterministic and pure. Explicit publications override it; null produces void. */
+    public static CompletableFuture<World> createEphemeralWorld(String name, Config config, ChunkContentProvider provider, ChunkEditingOptions options) {
+        return EphemeralWorlds.create(name, config, provider, options);
+    }
+    public static CompletableFuture<World> createEphemeralWorld(String name, Config config, ChunkContentProvider provider) {
+        return createEphemeralWorld(name, config, provider, ChunkEditingOptions.DEFAULT);
+    }
+
+    /** Accepts immutable content without loading or generating a chunk. */
+    public static CompletableFuture<PublishChunkResult> publishChunk(World world, int x, int z, PreparedChunk content) { return EphemeralEdits.publish(world, x, z, content); }
+    public static CompletableFuture<PublishChunksResult> publishChunks(World world, Map<ChunkCoordinates, PreparedChunk> content) { return EphemeralEdits.publish(world, content); }
+    /** Separate from publication: completes after the native FULL chunk request. */
+    public static CompletableFuture<GenerateChunkResult> generatePublishedChunk(World world, int x, int z) { return EphemeralEdits.generate(world, x, z); }
+    public static CompletableFuture<DiscardPublicationResult> discardPublishedChunk(World world, int x, int z) { return EphemeralEdits.discard(world, x, z); }
+    public static CompletableFuture<PatchChunkResult> patchChunk(World world, int x, int z, ChunkPatch patch, PatchOptions options) { return EphemeralEdits.patch(world, x, z, patch, options); }
+    public static CompletableFuture<PatchChunksResult> patchChunks(World world, Map<ChunkCoordinates, ChunkPatch> patches, PatchOptions options) { return EphemeralEdits.patches(world, patches, options); }
+    public static CompletableFuture<PatchChunksResult> patchChunks(World world, Collection<ChunkCoordinates> coordinates, ChunkPatch patch, PatchOptions options) {
+        try {
+            Map<ChunkCoordinates, ChunkPatch> patches = new java.util.LinkedHashMap<>();
+            for (ChunkCoordinates coordinate : List.copyOf(coordinates)) patches.put(coordinate, patch);
+            return EphemeralEdits.patches(world, patches, options);
+        } catch (Throwable failure) { return CompletableFuture.failedFuture(failure); }
+    }
+    public static CompletableFuture<PatchChunksResult> pastePattern(World world, BlockPosition origin, BlockPattern pattern, PatternOptions options) { return EphemeralEdits.paste(world, origin, pattern, options); }
+    /** Offset is applied explicitly here. Warnings must be acknowledged before any world operation. */
+    public static CompletableFuture<PatchChunksResult> pasteSchematic(World world, BlockPosition origin, SchematicImport schematic, PatternOptions options, boolean acknowledgeWarnings) {
+        try {
+            if (!acknowledgeWarnings && !schematic.warnings().isEmpty()) throw new IllegalArgumentException("Acknowledge schematic warnings before pasting: " + schematic.warnings());
+            BlockPosition offset = schematic.offset();
+            return pastePattern(world, origin.add(offset.x(), offset.y(), offset.z()), schematic.pattern(), options);
+        } catch (Throwable failure) { return CompletableFuture.failedFuture(failure); }
+    }
+    /** Clears a subvolume, not its chunks. Successful chunk destruction is preferable for releasing entire floors. */
+    public static CompletableFuture<PatchChunksResult> destroyPatch(World world, BlockBounds bounds, PatchOptions options) { return EphemeralEdits.clear(world, bounds, options); }
 
     public static FilePolarSource getDefaultFolderSource(String worldName) {
         Path worldsFolder = PolarPaper.getWorldsPath();
