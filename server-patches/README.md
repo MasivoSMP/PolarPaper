@@ -19,14 +19,15 @@ Java 25 is required. The patched server is
 The patch includes `EPHEMERAL_SERVER_PATCH.md` with the API contract, limitations and test instructions.
 Do not strip whitespace from nested generated `.patch` files: their blank context lines need a space.
 
-Validated: ten unit tests and an actual disposable Canvas server smoke test (14 assertions), including
+Validated: eleven unit tests and an actual disposable Canvas server smoke test (14 assertions), including
 no ephemeral content files after forced regional saving and unchanged normal-world persistence.
 The test plugin creates worlds and stops its server; **never install it in production**.
 
-The patch also supplies lifecycle contract version 1: ticketless dispatch to existing regions and
+The patch supplies lifecycle contract version 2 (version 1 remains accepted for lifecycle-only use): ticketless dispatch to existing regions and
 targeted native chunk destruction without removing foreign tickets or force-removing entities.
-Polar's actual patched-Canvas integration run passed 28 assertions with two regional tick threads,
-including weak-reference collection before and after world destruction; Paper's regression passed 41.
+Version 2 adds `executeOnExistingRegion` for bounded edits without loading or adding scheduler tickets.
+Polar's patched-Canvas suite uses two regional tick threads and includes publication/generation races,
+patches, pattern transforms, volume cleanup and weak-reference collection; Paper runs the same editing suite.
 Run Polar's two-thread regional integration suite from the Polar repository:
 
 ```sh

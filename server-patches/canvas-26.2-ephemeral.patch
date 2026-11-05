@@ -846,10 +846,10 @@ index 00000000..279d6d67
 +             new PhantomSpawner(), new PatrolSpawner(), new CatSpawner(), new VillageSiege(), new WanderingTraderSpawner(savedDataStorage)
 diff --git a/EPHEMERAL_SERVER_PATCH.md b/EPHEMERAL_SERVER_PATCH.md
 new file mode 100644
-index 00000000..1de3849e
+index 00000000..fcec7465
 --- /dev/null
 +++ b/EPHEMERAL_SERVER_PATCH.md
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,77 @@
 +# Experimental ephemeral-content capability
 +
 +Base: Canvas `ver/26.2`, commit `a631d9d7f16e2ea127cb731a31775206877038be`
@@ -887,7 +887,10 @@ index 00000000..1de3849e
 +
 +## Build and tests
 +
-+`EphemeralChunkLifecycle.contractVersion()` returns 1. `destroyChunk(ServerLevel, x, z)` returns
++`EphemeralChunkLifecycle.contractVersion()` returns 2. `executeOnExistingRegion(ServerLevel, x, z, Runnable)`
++dispatches bounded edits using the same ticketless queue, returns false for absent/retired/unloading regions,
++and completes exceptionally if the action throws. Actions must still verify chunk readiness and obey budgets.
++`destroyChunk(ServerLevel, x, z)` returns
 +a future containing `DESTROYED`, `ALREADY_ABSENT`, `BLOCKED` or `WORLD_DESTROYING`; technical errors
 +are exceptional. It dispatches through an existing-region ticketless queue, preserving native
 +split/merge routing and retiring tasks when regions disappear. It never loads a missing region,
@@ -908,15 +911,16 @@ index 00000000..1de3849e
 +
 +Validated locally:
 +
-+- Ten unit tests: all three controllers, direct existing/absent region storage, saved data,
++- Eleven unit tests: all three controllers, direct existing/absent region storage, saved data,
 +  native pre-serialization guards, generation/IO halt failures, aggregate cache-close failures,
-+  exactly-once unload completion after failure, and ticketless queue execution/retirement without IO or tickets.
++   exactly-once unload completion after failure, ticketless queue execution/retirement without IO or tickets,
++   and editing-bridge rejection/absent dispatch.
 +- Actual patched Canvas boot: generated a chunk with a block entity, entity and POI; invoked
 +  the native shutdown-save path; unloaded using `save=false`; observed no content files.
 +  A normal world still wrote block/entity/POI regions and unloaded successfully (14 assertions).
 +
 +The separate Polar repository supplies a two-regional-thread lifecycle integration plugin/runner.
-+Its actual patched-server run passed 28 assertions: targeted destruction across distant regions,
++Its actual patched-server run additionally exercises prepared generation and bounded editing: targeted destruction across distant regions,
 +ticket blockers, absent chunks, void revisit, checked/cancelled unload, cleanup retry, and weak-reference
 +collection of chunks while the world remains loaded followed by collection of the detached world.
 +Not yet validated exhaustively: split/merge stress, players and teleport races, sustained memory plateau,
@@ -1101,10 +1105,10 @@ index 00000000..87d27e61
 +folia-supported: true
 diff --git a/canvas-server/src/main/java/io/canvasmc/canvas/world/EphemeralChunkLifecycle.java b/canvas-server/src/main/java/io/canvasmc/canvas/world/EphemeralChunkLifecycle.java
 new file mode 100644
-index 00000000..b7649281
+index 00000000..893a09c5
 --- /dev/null
 +++ b/canvas-server/src/main/java/io/canvasmc/canvas/world/EphemeralChunkLifecycle.java
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,40 @@
 +package io.canvasmc.canvas.world;
 +
 +import io.papermc.paper.threadedregions.RegionizedServer;
@@ -1114,7 +1118,22 @@ index 00000000..b7649281
 +/** Versioned native bridge. No Bukkit scheduler tickets or loads are needed for destruction. */
 +public final class EphemeralChunkLifecycle {
 +    private EphemeralChunkLifecycle() {}
-+    public static int contractVersion() { return 1; }
++    public static int contractVersion() { return 2; }
++
++    /** Ticketless owned-region dispatch for bounded plugin edits. False means the existing region retired/was absent. */
++    public static CompletableFuture<Boolean> executeOnExistingRegion(ServerLevel world, int x, int z, Runnable action) {
++        if (!world.canvas$isEphemeral()) return CompletableFuture.failedFuture(new IllegalArgumentException("Not ephemeral"));
++        var manager = world.moonrise$getChunkTaskScheduler().chunkHolderManager;
++        if (manager.getChunkHolder(x, z) == null) return CompletableFuture.completedFuture(false);
++        CompletableFuture<Boolean> future = new CompletableFuture<>();
++        RegionizedServer.getInstance().taskQueue.queueExistingTickTask(world, x, z, () -> {
++            try {
++                if (world.canvas$unloadTicket.isPresent()) future.complete(false);
++                else { action.run(); future.complete(true); }
++            } catch (Throwable failure) { future.completeExceptionally(failure); }
++        }, () -> future.complete(false));
++        return future;
++    }
 +
 +    public static CompletableFuture<String> destroyChunk(ServerLevel world, int x, int z) {
 +        if (!world.canvas$isEphemeral()) return CompletableFuture.failedFuture(new IllegalArgumentException("Not ephemeral"));
@@ -1132,10 +1151,10 @@ index 00000000..b7649281
 +}
 diff --git a/canvas-server/src/test/java/io/canvasmc/canvas/world/EphemeralStorageTestSuite.java b/canvas-server/src/test/java/io/canvasmc/canvas/world/EphemeralStorageTestSuite.java
 new file mode 100644
-index 00000000..10d1d7e4
+index 00000000..1445677c
 --- /dev/null
 +++ b/canvas-server/src/test/java/io/canvasmc/canvas/world/EphemeralStorageTestSuite.java
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,299 @@
 +package io.canvasmc.canvas.world;
 +
 +import static org.junit.jupiter.api.Assertions.*;
@@ -1189,6 +1208,21 @@ index 00000000..10d1d7e4
 +        when(craftWorld.getName()).thenReturn("ephemeral-test");
 +        when(world.getWorld()).thenReturn(craftWorld);
 +        return world;
++    }
++
++    @Test
++    void editingBridgeRejectsNormalWorldAndNeverDispatchesAbsentChunks() throws Exception {
++        assertEquals(2, EphemeralChunkLifecycle.contractVersion());
++        var rejected = EphemeralChunkLifecycle.executeOnExistingRegion(world(false), 12, 13, () -> fail("Normal world edited"));
++        assertInstanceOf(IllegalArgumentException.class, assertThrows(java.util.concurrent.CompletionException.class, rejected::join).getCause());
++        ServerLevel world = world(true);
++        ChunkTaskScheduler scheduler = mock(ChunkTaskScheduler.class);
++        ChunkHolderManager manager = mock(ChunkHolderManager.class);
++        field(scheduler, "chunkHolderManager", manager);
++        when(world.moonrise$getChunkTaskScheduler()).thenReturn(scheduler);
++        assertFalse(EphemeralChunkLifecycle.executeOnExistingRegion(world, 12, 13, () -> fail("Absent chunk edited")).join());
++        verify(manager).getChunkHolder(12, 13);
++        verifyNoMoreInteractions(manager);
 +    }
 +
 +    @Test
