@@ -85,6 +85,8 @@ public class ChunkUtils {
     }
 
     public static void insertChunk(ServerLevel serverLevel, NoUnloadLevelChunk newLevelChunk) {
+        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(serverLevel, newLevelChunk.locX, newLevelChunk.locZ, "Insert Polar chunk");
+        Heightmap.primeHeightmaps(newLevelChunk, ChunkStatus.FULL.heightmapsAfter());
         newLevelChunk.setLightCorrect(true);
         newLevelChunk.tryMarkSaved();
 
@@ -124,12 +126,6 @@ public class ChunkUtils {
             }
         }
 
-        CompletableFuture.runAsync(() -> Heightmap.primeHeightmaps(newLevelChunk, ChunkStatus.FULL.heightmapsAfter()))
-                .exceptionally(e -> {
-                    LOGGER.error("Heightmaps failed to prime", e);
-                    return null;
-                });
-
         newLevelChunk.setFullStatus(() -> FullChunkStatus.ENTITY_TICKING);
         newLevelChunk.runPostLoad();
         newLevelChunk.setLoaded(true);
@@ -147,6 +143,7 @@ public class ChunkUtils {
     }
 
     public static void lightChunk(ServerLevel level, LevelChunk chunk) {
+        if (!ca.spottedleaf.moonrise.common.util.TickThread.isTickThreadFor(level, chunk.locX, chunk.locZ, 2)) throw new IllegalStateException("Polar lighting requires ownership of radius 2");
         ThreadedLevelLightEngine threadedEngine = (ThreadedLevelLightEngine) level.getLightEngine();
         StarLightInterface starlight = threadedEngine.starlight$getLightEngine();
         starlight.lightChunk(chunk, StarLightEngine.getEmptySectionsForChunk(chunk));
@@ -185,6 +182,7 @@ public class ChunkUtils {
     }
 
     public static void addBlockEntity(int x, int y, int z, @Nullable CompoundTag nbt, ChunkAccess chunk) {
+        if (chunk instanceof LevelChunk loaded) ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread((ServerLevel) loaded.getLevel(), chunk.locX, chunk.locZ, "Restore block entity NBT");
         BlockState blockState = chunk.getBlockState(x, y, z);
         BlockPos blockPos = new BlockPos(chunk.locX * 16 + x, y, chunk.locZ * 16 + z);
 
@@ -205,7 +203,8 @@ public class ChunkUtils {
 
         try (var problemReporter = new ProblemReporter.ScopedCollector(() -> "addBlockEntity", LOGGER)) {
             // Load NBT data into the block entity
-            blockEntity.loadWithComponents(TagValueInput.create(problemReporter, registryAccess, nbt));
+            if (nbt != null) blockEntity.loadWithComponents(TagValueInput.create(problemReporter, registryAccess, nbt.copy()));
+            if (!problemReporter.isEmpty()) throw new IllegalArgumentException("Invalid block entity NBT: " + problemReporter.getReport());
 
             if (chunk instanceof LevelChunk levelChunk) {
                 blockEntity.setLevel(levelChunk.getLevel());

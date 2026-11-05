@@ -131,9 +131,9 @@ public class SlimeStreamLoader extends PolarGenerator {
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         int chunkCount = reader.readInt();
-        for (int i = 0; i < chunkCount; i++) {
-            futures.add(readChunk(reader, world));
-        }
+        try {
+            for (int i = 0; i < chunkCount; i++) futures.add(readChunk(reader, world));
+        } catch (Throwable error) { futures.add(CompletableFuture.failedFuture(error)); }
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
     }
 
@@ -199,7 +199,7 @@ public class SlimeStreamLoader extends PolarGenerator {
         }
         // TODO: count of unsupported data
         // TODO: give block/fluid ticks to chunk
-        NoUnloadLevelChunk newLevelChunk = new NoUnloadLevelChunk(serverLevel, new ChunkPos(chunkX, chunkZ), UpgradeData.EMPTY, new LevelChunkTicks<>(), new LevelChunkTicks<>(), 0L, levelChunkSections, null, null);
+        List<CompoundTag> blockEntityTags = new ArrayList<>();
 
         try {
             int length = reader.readInt();
@@ -208,14 +208,14 @@ public class SlimeStreamLoader extends PolarGenerator {
                 for (Tag entities : tag.getListOrEmpty("tileEntities")) {
                     CompoundTag entityCompound = entities.asCompound().orElse(null);
                     if (entityCompound == null) continue;
-                    ChunkUtils.addBlockEntity(entityCompound, newLevelChunk);
+                    blockEntityTags.add(entityCompound);
                 }
             }
         } catch (IOException e) {
             return CompletableFuture.failedFuture(e);
         }
 
-        List<net.minecraft.world.entity.Entity> successEntities = new ArrayList<>();
+        List<CompoundTag> entityTags = new ArrayList<>();
 
         try {
             int length = reader.readInt();
@@ -227,10 +227,7 @@ public class SlimeStreamLoader extends PolarGenerator {
                     ListTag posCompound = entityCompound.getList("Pos").orElse(null);
                     if (posCompound == null) continue;
                     entityCompound.putInt("DataVersion", dataVersion);
-                    Location spawnLocation = new Location(world, posCompound.getDoubleOr(0, 0.0), posCompound.getDoubleOr(1, 0.0), posCompound.getDoubleOr(2, 0.0));
-                    net.minecraft.world.entity.Entity entity = PolarEntity.toNMSEntity(this.entitySerializer, world, spawnLocation, entityCompound);
-                    if (entity == null) continue;
-                    successEntities.add(entity);
+                    entityTags.add(entityCompound);
                 }
             }
         } catch (IOException e) {
@@ -248,6 +245,17 @@ public class SlimeStreamLoader extends PolarGenerator {
         boolean finalLightPresent = lightPresent;
 
         return TaskFutures.runRegion(getWorldAccess().getPlugin(), world, chunkX, chunkZ, () -> {
+        NoUnloadLevelChunk newLevelChunk = new NoUnloadLevelChunk(serverLevel, new ChunkPos(chunkX, chunkZ), UpgradeData.EMPTY, new LevelChunkTicks<>(), new LevelChunkTicks<>(), 0L, levelChunkSections, null, null);
+            for (CompoundTag tag : blockEntityTags) ChunkUtils.addBlockEntity(tag, newLevelChunk);
+            List<net.minecraft.world.entity.Entity> successEntities = new ArrayList<>();
+            for (CompoundTag tag : entityTags) {
+                var pos = tag.getList("Pos").orElseThrow();
+                Location location = new Location(world, pos.getDoubleOr(0, 0), pos.getDoubleOr(1, 0), pos.getDoubleOr(2, 0));
+                if ((location.getBlockX() >> 4) != chunkX || (location.getBlockZ() >> 4) != chunkZ) throw new IllegalArgumentException("Entity outside owning chunk");
+                var entity = PolarEntity.toNMSEntity(this.entitySerializer, world, location, tag);
+                if (entity != null) successEntities.add(entity);
+            }
+
             if (finalLightPresent) {
                 newLevelChunk.starlight$setBlockEmptinessMap(emptinessMap);
                 newLevelChunk.starlight$setSkyEmptinessMap(emptinessMap);

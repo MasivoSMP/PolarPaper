@@ -79,10 +79,11 @@ final class EphemeralEdits {
             var store = store(world); ChunkCoordinates c = new ChunkCoordinates(x, z); coordinate(c);
             return EphemeralWorlds.edit(world, c, 0, () -> {
                 if (!store.hasPublication(c)) return CompletableFuture.completedFuture(GenerateChunkResult.NOT_PUBLISHED);
-                return world.getChunkAtAsync(x, z, true).thenApply(chunk -> {
+                return world.getChunkAtAsync(x, z, true).thenCompose(chunk -> live.minehub.polarpaper.core.util.TaskFutures.runRegion(PolarPaper.getPlugin(), world, x, z, () -> {
                     if (chunk == null) throw new IllegalStateException("Server returned no generated chunk");
+                    store.checkRestoration();
                     store.discard(c); return GenerateChunkResult.GENERATED;
-                });
+                }));
             }, GenerateChunkResult.BUSY, GenerateChunkResult.WORLD_DESTROYING, GenerateChunkResult.CAPACITY_EXCEEDED);
         } catch (Throwable error) { return CompletableFuture.failedFuture(error); }
     }

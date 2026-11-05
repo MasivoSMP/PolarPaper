@@ -27,6 +27,30 @@ public final class ChunkContentStore {
     private ChunkContentProvider provider;
     private long pendingBytes, cacheBytes;
     private boolean closing;
+    private volatile Throwable restorationFailure;
+    public void failRestoration(Throwable error) { restorationFailure = error; }
+    public void checkRestoration() {
+        if (restorationFailure != null) throw new IllegalStateException("Block entity restoration failed; discard this world", restorationFailure);
+    }
+    /** Called synchronously by ChunkLoadEvent on its owning region, before publication is consumed. */
+    public void restore(org.bukkit.World world, net.minecraft.world.level.chunk.LevelChunk chunk) {
+        var level = ((org.bukkit.craftbukkit.CraftWorld) world).getHandle();
+        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(level, chunk.locX, chunk.locZ, "Restore prepared block entities");
+        try {
+            checkRestoration();
+            Content payload = content(world, chunk.locX, chunk.locZ);
+            if (payload == null) return;
+            // Validate the entire live target before applying the first NBT payload.
+            for (PreparedBlockEntity entity : payload.chunk().blockEntities()) {
+                var pos = new net.minecraft.core.BlockPos(chunk.locX * 16 + entity.x(), entity.y(), chunk.locZ * 16 + entity.z());
+                var type = net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.parse(entity.type()));
+                if (type == null || !type.isValid(chunk.getBlockState(pos))) throw new IllegalArgumentException("Block entity does not match target block at " + pos);
+            }
+            for (PreparedBlockEntity entity : payload.chunk().blockEntities()) {
+                live.minehub.polarpaper.core.generator.ChunkUtils.addBlockEntity(entity.x(), entity.y(), entity.z(), entity.data(), chunk);
+            }
+        } catch (Throwable error) { restorationFailure = error; throw error; }
+    }
     private static final ThreadLocal<Boolean> preparing = ThreadLocal.withInitial(() -> false);
     public static void checkNotPreparing() {
         if (preparing.get()) throw new IllegalStateException("Content providers must not call Polar lifecycle/editing APIs");
@@ -41,6 +65,11 @@ public final class ChunkContentStore {
         if (chunk.minY() != minY || chunk.maxY() != maxY) throw new IllegalArgumentException("Payload heights must match destination world");
         Map<String, BlockData> blocks = new HashMap<>();
         for (String state : chunk.blocks().palette()) blocks.put(state, Bukkit.createBlockData(state));
+        for (PreparedBlockEntity entity : chunk.blockEntities()) {
+            var type = net.minecraft.core.registries.BuiltInRegistries.BLOCK_ENTITY_TYPE.getValue(net.minecraft.resources.Identifier.parse(entity.type()));
+            var state = ((org.bukkit.craftbukkit.block.data.CraftBlockData) blocks.get(chunk.blocks().block(entity.x(), entity.y() - minY, entity.z()))).getState();
+            if (type == null || !type.isValid(state)) throw new IllegalArgumentException("Prepared block entity type does not match block");
+        }
         Map<String, Biome> biomes = new HashMap<>();
         for (String key : chunk.biomeKeys()) {
             NamespacedKey name = NamespacedKey.fromString(key);
@@ -77,6 +106,7 @@ public final class ChunkContentStore {
     public synchronized void startClosing() { closing = true; }
     public synchronized void release() {
         closing = true;
+        restorationFailure = null;
         published.values().forEach(value -> unreserve(value.bytes(), true));
         providerCache.values().forEach(value -> unreserve(value.bytes(), false));
         published.clear(); providerCache.clear(); pendingBytes = cacheBytes = 0; provider = null; preparing.remove();

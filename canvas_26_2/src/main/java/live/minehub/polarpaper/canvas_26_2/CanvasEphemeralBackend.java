@@ -85,6 +85,8 @@ public final class CanvasEphemeralBackend {
         verifySupport();
         if (execute != null) return;
         try {
+            Class<?> bridge = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle");
+            if ((int) bridge.getMethod("contractVersion").invoke(null) != 2) throw new UnsupportedOperationException("Editing requires native contractVersion == 2");
             execute = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle")
                     .getMethod("executeOnExistingRegion", ServerLevel.class, int.class, int.class, Runnable.class);
         } catch (ReflectiveOperationException error) {

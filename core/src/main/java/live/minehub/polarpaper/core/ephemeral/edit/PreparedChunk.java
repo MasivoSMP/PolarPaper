@@ -7,7 +7,9 @@ public final class PreparedChunk {
     private final int minY;
     private final BlockPattern blocks;
     private final String[] biomes;
-    private PreparedChunk(Builder builder) { minY = builder.minY; blocks = builder.blocks.build(); biomes = builder.biomes.clone(); }
+    private final List<PreparedBlockEntity> blockEntities;
+    private PreparedChunk(Builder builder) { minY = builder.minY; blocks = builder.blocks.build(); biomes = builder.biomes.clone(); blockEntities = List.copyOf(builder.blockEntities.values()); }
+    public List<PreparedBlockEntity> blockEntities() { return blockEntities; }
     public static Builder builder(int minY, int maxY) { return new Builder(minY, maxY); }
     public int minY() { return minY; }
     public int maxY() { return minY + blocks.height(); }
@@ -17,11 +19,21 @@ public final class PreparedChunk {
         return biomes[(localX >> 2) + (localZ >> 2) * 4 + ((y - minY) >> 2) * 16];
     }
     public Set<String> biomeKeys() { return Set.copyOf(Arrays.asList(biomes)); }
-    public long estimatedBytes() { return blocks.estimatedBytes() + biomes.length * 8L + biomeKeys().stream().mapToLong(s -> 40L + s.length() * 2L).sum(); }
+    public long estimatedBytes() { return blocks.estimatedBytes() + biomes.length * 8L + biomeKeys().stream().mapToLong(s -> 40L + s.length() * 2L).sum() + blockEntities.stream().mapToLong(e -> 128L + e.encodedBytes() * 4L).sum(); }
     public static final class Builder {
         private final int minY, maxY;
         private final BlockPattern.Builder blocks;
         private final String[] biomes;
+        private final Map<BlockPosition, PreparedBlockEntity> blockEntities = new LinkedHashMap<>();
+        private long nbtBytes;
+        public Builder blockEntity(PreparedBlockEntity entity) {
+            Objects.requireNonNull(entity);
+            if (entity.y() < minY || entity.y() >= maxY) throw new IllegalArgumentException("Block entity Y outside payload");
+            var key = new BlockPosition(entity.x(), entity.y(), entity.z());
+            if (blockEntities.containsKey(key)) throw new IllegalArgumentException("Duplicate block entity position");
+            if (blockEntities.size() >= 4096 || nbtBytes + entity.encodedBytes() > 4L * 1024 * 1024) throw new IllegalArgumentException("Chunk block entity budget exceeded");
+            blockEntities.put(key, entity); nbtBytes += entity.encodedBytes(); return this;
+        }
         private Builder(int minY, int maxY) {
             if (minY % 4 != 0 || maxY % 4 != 0 || minY >= maxY || (long) maxY - minY > 4096) throw new IllegalArgumentException("Invalid chunk heights");
             this.minY = minY; this.maxY = maxY; blocks = BlockPattern.builder(16, maxY - minY, 16);

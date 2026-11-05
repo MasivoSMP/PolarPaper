@@ -11,16 +11,16 @@ public class WorldUnloaderImpl implements WorldUnloader {
     @Override
     public CompletableFuture<Boolean> unloadWorld(Plugin plugin, World world) {
         CompletableFuture<Boolean> future = new CompletableFuture<>();
-        Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
+        try { Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
             try {
                 Bukkit.getServer().unloadWorldAsync(world, false, result -> {
                     future.complete(result.isSuccess());
                 });
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 LOGGER.error("Task failed exceptionally: ", e);
                 future.completeExceptionally(e);
             }
-        });
+        }); } catch (Throwable error) { future.completeExceptionally(error); }
         return future;
     }
 }

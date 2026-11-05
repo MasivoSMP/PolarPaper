@@ -126,66 +126,28 @@ public class PolarStreamLoader extends PolarGenerator {
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         int chunkCount = reader.readVarInt();
-        for (int i = 0; i < chunkCount; i++) {
-            futures.add(readChunk(reader, world, maxSection - minSection + 1));
-        }
+        try {
+            for (int i = 0; i < chunkCount; i++) futures.add(readChunk(reader, world, maxSection - minSection + 1));
+        } catch (Throwable error) { futures.add(CompletableFuture.failedFuture(error)); }
         return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
     }
 
     private CompletableFuture<Void> readChunk(MemorySegmentReader reader, World world, int sectionCount) {
-        var chunkX = reader.readVarInt();
-        var chunkZ = reader.readVarInt();
-
-        CraftWorld craftWorld = (CraftWorld) world;
-        ServerLevel serverLevel = craftWorld.getHandle();
-
-        boolean[] emptinessMap = new boolean[sectionCount];
-        SWMRNibbleArray[] blockNibbles = ChunkUtils.createNibbleArray(sectionCount + 2); // light includes extra top and bottom section
-        SWMRNibbleArray[] skyNibbles = ChunkUtils.createNibbleArray(sectionCount + 2);
-        boolean lightPresent = false;
-        LevelChunkSection[] levelChunkSections = new LevelChunkSection[sectionCount];
-        for (int i = 0; i < sectionCount; i++) {
-            PolarSection polarSection = PolarReader.readSection(dataConverter, dataVersion, reader);
-            if (!lightPresent && (polarSection.skyLightContent() != PolarSection.LightContent.MISSING || polarSection.blockLightContent() != PolarSection.LightContent.MISSING)) lightPresent = true;
-
-            try {
-                LevelChunkSection section = polarSection.createLevelChunkSection(serverLevel.registryAccess());
-                levelChunkSections[i] = section;
-                emptinessMap[i] = section.hasOnlyAir();
-                skyNibbles[i + 1] = polarSection.skyLight();
-                blockNibbles[i + 1] = polarSection.blockLight();
-            } catch (Exception e) {
-                LOGGER.error("Failed to load chunk at {} {} (section {}/{}) in {}", chunkX, chunkZ, i, sectionCount, world.getKey());
-                return CompletableFuture.failedFuture(e);
-            }
-        }
-
-        NoUnloadLevelChunk newLevelChunk = new NoUnloadLevelChunk(serverLevel, new ChunkPos(chunkX, chunkZ), UpgradeData.EMPTY, new LevelChunkTicks<>(), new LevelChunkTicks<>(), 0L, levelChunkSections, null, null);
-
-        int blockEntityCount = reader.readVarInt();
-        for (int i = 0; i < blockEntityCount; i++) {
-            PolarChunk.BlockEntity polarBlockEntity = PolarReader.readBlockEntity(dataConverter, dataVersion, reader);
-            ChunkUtils.addBlockEntity(polarBlockEntity, newLevelChunk);
-        }
-
-        var heightmaps = PolarReader.readHeightmaps(reader);
-
-        byte[] chunkUserData = reader.readByteArray();
-
-        boolean finalLightPresent = lightPresent;
-
-        return TaskFutures.runRegion(getWorldAccess().getPlugin(), world, chunkX, chunkZ, () -> {
-            if (finalLightPresent) {
-                newLevelChunk.starlight$setBlockEmptinessMap(emptinessMap);
-                newLevelChunk.starlight$setSkyEmptinessMap(emptinessMap);
-                newLevelChunk.starlight$setSkyNibbles(skyNibbles);
-                newLevelChunk.starlight$setBlockNibbles(blockNibbles);
-            } else {
-                ChunkUtils.lightChunk(serverLevel, newLevelChunk);
-            }
-            ChunkUtils.insertChunk(serverLevel, newLevelChunk);
-            getWorldAccess().loadChunkData(world, newLevelChunk, chunkUserData);
-
+        int x = reader.readVarInt(), z = reader.readVarInt();
+        PolarSection[] sections = new PolarSection[sectionCount];
+        for (int i = 0; i < sectionCount; i++) sections[i] = PolarReader.readSection(dataConverter, dataVersion, reader);
+        int count = reader.readVarInt();
+        PolarChunk.BlockEntity[] entities = new PolarChunk.BlockEntity[count];
+        for (int i = 0; i < count; i++) entities[i] = PolarReader.readBlockEntity(dataConverter, dataVersion, reader);
+        int[][] heightmaps = PolarReader.readHeightmaps(reader);
+        byte[] data = reader.readByteArray();
+        PolarChunk input = new PolarChunk(x, z, sections, entities, heightmaps, data);
+        return TaskFutures.runRegion(getWorldAccess().getPlugin(), world, x, z, () -> {
+            ServerLevel level = ((CraftWorld) world).getHandle();
+            NoUnloadLevelChunk chunk = input.createLevelChunk(level);
+            for (PolarChunk.BlockEntity entity : entities) ChunkUtils.addBlockEntity(entity, chunk);
+            ChunkUtils.insertChunk(level, chunk);
+            getWorldAccess().loadChunkData(world, chunk, data);
             return null;
         });
     }

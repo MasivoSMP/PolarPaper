@@ -35,14 +35,15 @@ public class TaskFutures {
 
     public static <T extends @Nullable Object> CompletableFuture<T> runRegion(Plugin plugin, World world, int chunkX, int chunkZ, Supplier<T> runnable) {
         CompletableFuture<T> future = new CompletableFuture<>();
-        Bukkit.getRegionScheduler().execute(plugin, world, chunkX, chunkZ, () -> {
+        try { Bukkit.getRegionScheduler().execute(plugin, world, chunkX, chunkZ, () -> {
             try {
                 future.complete(runnable.get());
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 LOGGER.error("Task failed exceptionally: ", e);
                 future.completeExceptionally(e);
             }
         });
+        } catch (Throwable error) { future.completeExceptionally(error); }
         return future;
     }
 
@@ -58,16 +59,15 @@ public class TaskFutures {
      * Schedule the task on the global region scheduler
      */
     public static <T extends @Nullable Object> CompletableFuture<T> runGlobal(Plugin plugin, Supplier<T> runnable) {
-        if (TickThread.isTickThread()) return CompletableFuture.completedFuture(runnable.get());
         CompletableFuture<T> future = new CompletableFuture<>();
-        Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
+        try { Bukkit.getGlobalRegionScheduler().execute(plugin, () -> {
             try {
                 future.complete(runnable.get());
-            } catch (Exception e) {
+            } catch (Throwable e) {
                 LOGGER.error("Task failed exceptionally: ", e);
                 future.completeExceptionally(e);
             }
-        });
+        }); } catch (Throwable error) { future.completeExceptionally(error); }
         return future;
     }
 

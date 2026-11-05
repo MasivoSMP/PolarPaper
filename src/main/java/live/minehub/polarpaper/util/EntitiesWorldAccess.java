@@ -94,7 +94,7 @@ public class EntitiesWorldAccess implements PolarWorldAccess {
                 byte[] bytes = reader.readByteArray();
                 persistentDataContainer.readFromBytes(bytes);
             } catch (IOException e) {
-                LOGGER.error("Failed to deserialize persistent data container", e);
+                throw new java.io.UncheckedIOException("Failed to deserialize persistent data container", e);
             }
         }
     }

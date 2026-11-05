@@ -11,7 +11,7 @@ plugins {
     alias(libs.plugins.shadow)
 }
 
-val developmentVersion = "2.3.2"
+val developmentVersion = "2.3.2-masivo-v2.1-candidate"
 
 version = getVersion()
 group = "live.minehub"
@@ -92,6 +92,19 @@ tasks.register<Jar>("canvasEphemeralTestPlugin") {
     archiveFileName.set("PolarCanvasEphemeralTest.jar")
     from(compileCanvasEphemeralTestPlugin)
     from("src/canvasIntegrationTest/resources")
+}
+
+val compileNbtTestPlugin = tasks.register<JavaCompile>("compileNbtTestPlugin") {
+    source(fileTree("src/nbtIntegrationTest/java"))
+    classpath = sourceSets.main.get().compileClasspath + sourceSets.main.get().output
+    destinationDirectory.set(layout.buildDirectory.dir("classes/nbtTestPlugin"))
+    options.release.set(25)
+}
+
+tasks.register<Jar>("nbtTestPlugin") {
+    archiveFileName.set("PreparedNbtTest.jar")
+    from(compileNbtTestPlugin)
+    from("src/nbtIntegrationTest/resources")
 }
 
 tasks.register<Jar>("ephemeralTestPlugin") {

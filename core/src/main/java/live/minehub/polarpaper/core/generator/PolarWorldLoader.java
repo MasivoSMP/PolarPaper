@@ -37,11 +37,12 @@ public class PolarWorldLoader extends PolarGenerator {
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-        for (PolarChunk chunk : polarWorld.chunks()) {
-            NoUnloadLevelChunk levelChunk = chunk.createLevelChunk(level);
+        for (PolarChunk chunk : List.copyOf(polarWorld.chunks())) {
+
 
             // Has to run on the thread owning the chunk, on Folia that is its region and not the global region
             futures.add(TaskFutures.runRegion(getWorldAccess().getPlugin(), world, chunk.x(), chunk.z(), () -> {
+                NoUnloadLevelChunk levelChunk = chunk.createLevelChunk(level);
                 for (PolarChunk.BlockEntity blockEntity : chunk.blockEntities()) {
                     ChunkUtils.addBlockEntity(blockEntity, levelChunk);
                 }

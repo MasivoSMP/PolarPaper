@@ -45,7 +45,10 @@ public class PolarListener implements Listener {
         if (!EphemeralWorlds.isEphemeral(event.getWorld())) return;
         var level = ((org.bukkit.craftbukkit.CraftWorld) event.getWorld()).getHandle();
         var holder = level.moonrise$getChunkTaskScheduler().chunkHolderManager.getChunkHolder(event.getChunk().getX(), event.getChunk().getZ());
-        if (holder != null && holder.getCurrentChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk) chunk.mustNotSave = true;
+        if (holder != null && holder.getCurrentChunk() instanceof net.minecraft.world.level.chunk.LevelChunk chunk) {
+            chunk.mustNotSave = true;
+            ((live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) event.getWorld().getGenerator()).content().restore(event.getWorld(), chunk);
+        } else ((live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) event.getWorld().getGenerator()).content().failRestoration(new IllegalStateException("ChunkLoadEvent without native full holder"));
         ((live.minehub.polarpaper.core.ephemeral.EphemeralGenerator) event.getWorld().getGenerator()).content()
                 .discard(new live.minehub.polarpaper.core.ephemeral.ChunkCoordinates(event.getChunk().getX(), event.getChunk().getZ()));
     }

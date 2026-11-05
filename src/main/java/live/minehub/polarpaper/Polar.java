@@ -259,12 +259,14 @@ public class Polar {
         long beforeTime = System.nanoTime();
 
         @NotNull String finalWorldName = worldName;
-        return VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time())
+        java.util.concurrent.atomic.AtomicReference<World> created = new java.util.concurrent.atomic.AtomicReference<>();
+        return TaskFutures.runGlobal(PolarPaper.getPlugin(), () -> VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time())).thenCompose(future -> future)
                 .thenApply(world -> {
                     if (world == null) return null;
 
                     // Since saving is disabled in the level anyway, setAutoSave is now essentially setting whether
                     // chunks should be allowed to unload and be removed from memory
+                    created.set(world);
                     world.setAutoSave(false);
                     return world;
                 }).thenComposeAsync(world -> {
@@ -277,17 +279,28 @@ public class Polar {
                     // Fill the rest of the area around spawn after loading so chunks are only inserted once
                     ServerLevel level = ((CraftWorld) world).getHandle();
                     return ChunkUtils.insertEmptyChunks(generator.getWorldAccess().getPlugin(), level).thenApply(_ -> world);
-                }).thenApply(world -> {
-                    if (world == null) return null;
+                }).thenCompose(world -> {
+                    if (world == null) return CompletableFuture.completedFuture(null);
+                    return TaskFutures.runGlobal(PolarPaper.getPlugin(), () -> {
                     LOGGER.info("Loaded {} in {}ms", finalWorldName, (System.nanoTime() - beforeTime) / 1_000_000);
                     setLoading(world.getKey(), false);
                     startAutoSaveTask(world, config);
 
-                    TaskFutures.runGlobal(PolarPaper.getPlugin(), () -> new WorldLoadEvent(world).callEvent());
+                    new WorldLoadEvent(world).callEvent();
                     return world;
-                }).exceptionally(e -> {
-                    LOGGER.error("Failed to load world {}", finalWorldName, e);
-                    return null;
+                    });
+                }).exceptionallyCompose(error -> {
+                    World failed = created.get();
+                    if (failed == null) return CompletableFuture.failedFuture(error);
+                    stopAutoSaveTask(failed.getKey());
+                    setLoading(failed.getKey(), true);
+                    return VersionUtil.getWorldUnloader().unloadWorld(PolarPaper.getPlugin(), failed).handle((success, cleanup) -> {
+                        if (cleanup != null) error.addSuppressed(cleanup);
+                        else if (!Boolean.TRUE.equals(success) || Bukkit.getWorld(failed.getUID()) != null || Bukkit.getWorld(failed.getKey()) != null)
+                            error.addSuppressed(new IllegalStateException("Partial world cleanup failed: " + failed.getKey()));
+                        else setLoading(failed.getKey(), false);
+                        throw new java.util.concurrent.CompletionException(error);
+                    });
                 });
     }
 
@@ -403,6 +416,7 @@ public class Polar {
      * @see PolarGenerator#getSource()
      */
     public static CompletableFuture<Void> saveWorld(World world) {
+        if (isLoading(world.getKey())) return CompletableFuture.failedFuture(new IllegalStateException("World is not ready"));
         if (EphemeralWorlds.isEphemeral(world)) return CompletableFuture.failedFuture(new IllegalArgumentException("Ephemeral worlds cannot be saved"));
         PolarGenerator generator = PolarGenerator.fromWorld(world);
         if (generator == null) return CompletableFuture.completedFuture(null);

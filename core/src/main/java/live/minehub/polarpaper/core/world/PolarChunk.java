@@ -88,6 +88,7 @@ public record PolarChunk(
     }
 
     public NoUnloadLevelChunk createLevelChunk(ServerLevel serverLevel) {
+        ca.spottedleaf.moonrise.common.util.TickThread.ensureTickThread(serverLevel, x, z, "Construct Polar chunk");
         int sectionCount = sections().length;
         SWMRNibbleArray[] blockNibbles = new SWMRNibbleArray[sectionCount + 2]; // light includes extra top and bottom section
         SWMRNibbleArray[] skyNibbles = new SWMRNibbleArray[sectionCount + 2];
@@ -95,11 +96,11 @@ public record PolarChunk(
         blockNibbles[sectionCount + 1] = new SWMRNibbleArray();
         skyNibbles[0] = new SWMRNibbleArray();
         skyNibbles[sectionCount + 1] = new SWMRNibbleArray();
-        boolean lightPresent = false;
+        boolean lightPresent = true;
         LevelChunkSection[] levelChunkSections = new LevelChunkSection[sectionCount];
         for (int i = 0; i < sectionCount; i++) {
             PolarSection polarSection = sections()[i];
-            if ((polarSection.skyLightContent() != PolarSection.LightContent.MISSING || polarSection.blockLightContent() != PolarSection.LightContent.MISSING)) lightPresent = true;
+            if (polarSection.skyLightContent() == PolarSection.LightContent.MISSING || polarSection.blockLightContent() == PolarSection.LightContent.MISSING) lightPresent = false;
             LevelChunkSection section = polarSection.createLevelChunkSection(serverLevel.registryAccess());
             levelChunkSections[i] = section;
             skyNibbles[i + 1] = polarSection.skyLight();
