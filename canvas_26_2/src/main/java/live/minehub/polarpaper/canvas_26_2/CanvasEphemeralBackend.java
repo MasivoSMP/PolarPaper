@@ -21,24 +21,21 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Loaded only on Canvas 26.2 with the versioned native no-persistence/lifecycle patch. */
+/** Loaded only on Pinac 26.2 with the native persistent-world API. */
 public final class CanvasEphemeralBackend {
     private static final Set<UUID> REQUESTS = ConcurrentHashMap.newKeySet();
     private static Method destroy;
-    private static Method execute;
+    private static Method persistent;
     private static boolean registered;
     private CanvasEphemeralBackend() {}
 
     public static synchronized void verifySupport() {
         if (destroy != null) return;
         try {
-            Class<?> bridge = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle");
-            int version = (int) bridge.getMethod("contractVersion").invoke(null);
-            if (version != 1 && version != 2) throw new IllegalStateException("Incompatible native contract");
-            Class.forName("io.canvasmc.canvas.world.EphemeralWorldGenerator");
-            destroy = bridge.getMethod("destroyChunk", ServerLevel.class, int.class, int.class);
+            persistent = WorldCreator.class.getMethod("persistent", boolean.class);
+            destroy = ServerLevel.class.getMethod("canvas$destroyNonPersistentChunkAsync", int.class, int.class);
         } catch (ReflectiveOperationException error) {
-            throw new UnsupportedOperationException("Canvas ephemeral worlds require server-patches/canvas-26.2-ephemeral.patch", error);
+            throw new UnsupportedOperationException("Canvas ephemeral worlds require Pinac 26.2 with persistent world support", error);
         }
     }
 
@@ -55,9 +52,11 @@ public final class CanvasEphemeralBackend {
         var server = ((CraftServer) Bukkit.getServer()).getServer();
         var dimension = CraftNamespacedKey.toResourceKey(Registries.DIMENSION, key);
         EphemeralStorage.reserve(plugin, server.storageSource.getDimensionPath(dimension), key.toString());
-        var generator = new CanvasGenerator(config, access, provider, options);
-        World world = WorldCreator.ofKey(key).type(config.worldType()).environment(config.environment())
-                .generator(generator).biomeProvider(generator.contentBiomeProvider()).createWorld();
+        var generator = new EphemeralGenerator(config, access, provider, options);
+        WorldCreator creator = WorldCreator.ofKey(key).type(config.worldType()).environment(config.environment())
+                .generator(generator).biomeProvider(generator.contentBiomeProvider());
+        persistent.invoke(creator, false);
+        World world = creator.createWorld();
         if (world == null) throw new IllegalStateException("Canvas did not create " + key);
         world.setAutoSave(false);
         world.setDifficulty(config.difficulty());
@@ -73,33 +72,18 @@ public final class CanvasEphemeralBackend {
         return world;
     }
 
-    public static CompletableFuture<DestroyChunkResult> destroyChunk(World world, int x, int z) {
-        try {
-            verifySupport();
-            @SuppressWarnings("unchecked") var future = (CompletableFuture<String>) destroy.invoke(null, ((CraftWorld) world).getHandle(), x, z);
-            return future.thenApply(DestroyChunkResult::valueOf);
-        } catch (ReflectiveOperationException error) { return CompletableFuture.failedFuture(error); }
-    }
-
-    public static synchronized void verifyEditingSupport() {
+    /** Dispatches to the owning region without a scheduler ticket or chunk load. */
+    @SuppressWarnings("unchecked")
+    public static CompletableFuture<DestroyChunkResult> destroyChunk(Plugin plugin, World world, int x, int z) {
         verifySupport();
-        if (execute != null) return;
         try {
-            Class<?> bridge = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle");
-            if ((int) bridge.getMethod("contractVersion").invoke(null) != 2) throw new UnsupportedOperationException("Editing requires native contractVersion == 2");
-            execute = Class.forName("io.canvasmc.canvas.world.EphemeralChunkLifecycle")
-                    .getMethod("executeOnExistingRegion", ServerLevel.class, int.class, int.class, Runnable.class);
-        } catch (ReflectiveOperationException error) {
-            throw new UnsupportedOperationException("Chunk editing requires Canvas ephemeral native contract 2; rebuild with the updated server patch", error);
+            CompletableFuture<String> status = (CompletableFuture<String>) destroy.invoke(((CraftWorld) world).getHandle(), x, z);
+            return status.thenApply(DestroyChunkResult::valueOf);
+        } catch (java.lang.reflect.InvocationTargetException error) {
+            return CompletableFuture.failedFuture(error.getCause());
+        } catch (Throwable error) {
+            return CompletableFuture.failedFuture(error);
         }
-    }
-
-    public static CompletableFuture<Boolean> executeOnExistingRegion(World world, int x, int z, Runnable action) {
-        try {
-            verifyEditingSupport();
-            @SuppressWarnings("unchecked") var future = (CompletableFuture<Boolean>) execute.invoke(null, ((CraftWorld) world).getHandle(), x, z, action);
-            return future;
-        } catch (ReflectiveOperationException error) { return CompletableFuture.failedFuture(error); }
     }
 
     /** Must be requested on the global region. Success is emitted only after checked native closure. */
@@ -111,8 +95,14 @@ public final class CanvasEphemeralBackend {
         REQUESTS.add(world.getUID());
         try {
             Bukkit.getServer().unloadWorldAsync(world, false, status -> {
-                if (status.isSuccess()) result.complete(null);
-                else result.completeExceptionally(new IllegalStateException("Canvas unload failed: " + status));
+                if (status.isSuccess()) {
+                    result.complete(null);
+                } else if ("FAIL_RESOURCE_CLOSE".equals(status.name())) {
+                    result.completeExceptionally(new IllegalStateException(
+                            "Native shutdown failed; the server is shutting down and the world must not be retried or deleted"));
+                } else {
+                    result.completeExceptionally(new IllegalStateException("Canvas unload failed: " + status));
+                }
             });
         } catch (Throwable error) { result.completeExceptionally(error); }
         finally { REQUESTS.remove(world.getUID()); }
@@ -126,9 +116,5 @@ public final class CanvasEphemeralBackend {
                 event.setCancelled(true);
             }
         }
-    }
-
-    private static final class CanvasGenerator extends EphemeralGenerator implements io.canvasmc.canvas.world.EphemeralWorldGenerator {
-        CanvasGenerator(Config config, PolarWorldAccess access, ChunkContentProvider provider, ChunkEditingOptions options) { super(config, access, provider, options); }
     }
 }

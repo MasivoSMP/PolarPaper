@@ -1,8 +1,12 @@
-# Experimental Canvas server patch
+# Legacy Canvas server patch
 
-`canvas-26.2-ephemeral.patch` applies to CraftCanvasMC/Canvas commit
+`canvas-26.2-ephemeral.patch` is the legacy patch for CraftCanvasMC/Canvas commit
 `a631d9d7f16e2ea127cb731a31775206877038be` on `ver/26.2` (build 994-stable).
-It is required by Polar's Canvas 26.2 ephemeral backend; stock Canvas is rejected.
+It was required by the old patched-Canvas ephemeral backend. It is **not** used by the current
+Pinac-backed adapter and is **not** applied by Pinac releases. It is kept only for historical
+reference and for reproducing the old test setup. Current Pinac 26.2 uses its native persistent-world
+APIs (`WorldCreator#persistent(false)`, `World#setPersistent(false)` and
+`ServerLevel#canvas$destroyNonPersistentChunkAsync`).
 
 In a clean clone at that revision:
 
@@ -23,11 +27,13 @@ Validated: eleven unit tests and an actual disposable Canvas server smoke test (
 no ephemeral content files after forced regional saving and unchanged normal-world persistence.
 The test plugin creates worlds and stops its server; **never install it in production**.
 
-The patch supplies lifecycle contract version 2 (version 1 remains accepted for lifecycle-only use): ticketless dispatch to existing regions and
+The patch supplied lifecycle contract version 2: ticketless dispatch to existing regions and
 targeted native chunk destruction without removing foreign tickets or force-removing entities.
-Version 2 adds `executeOnExistingRegion` for bounded edits without loading or adding scheduler tickets.
-Polar's patched-Canvas suite uses two regional tick threads and includes publication/generation races,
-patches, pattern transforms, volume cleanup and weak-reference collection; Paper runs the same editing suite.
+Version 2 also added `executeOnExistingRegion` for bounded edits without loading or adding scheduler
+tickets. That contract is obsolete; the current adapter uses Pinac's `persistent` API and native
+chunk-destruction method (`canvas$destroyNonPersistentChunkAsync`) instead. The legacy patched-Canvas suite used two regional tick threads and
+included publication/generation races, patches, pattern transforms, volume cleanup and weak-reference
+collection; Paper runs the same editing suite.
 Run Polar's two-thread regional integration suite from the Polar repository:
 
 ```sh

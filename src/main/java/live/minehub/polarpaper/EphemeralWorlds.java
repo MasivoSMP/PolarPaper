@@ -121,7 +121,7 @@ final class EphemeralWorlds {
                         }
                         return CompletableFuture.completedFuture(DestroyChunkResult.WORLD_DESTROYING);
                     }
-                    if (FoliaUtil.isCanvas()) return CanvasEphemeralBackend.destroyChunk(world, x, z);
+                    if (FoliaUtil.isCanvas()) return CanvasEphemeralBackend.destroyChunk(PolarPaper.getPlugin(), world, x, z);
                     return CompletableFuture.completedFuture(PaperEphemeralChunks.destroy(((CraftWorld) world).getHandle(), x, z));
                 }).thenCompose(future -> future).thenApply(result -> {
                     if (result == DestroyChunkResult.DESTROYED || result == DestroyChunkResult.ALREADY_ABSENT)

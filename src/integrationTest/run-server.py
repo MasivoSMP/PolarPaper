@@ -23,7 +23,14 @@ subprocess.run(['./gradlew', 'build', task, '--console=plain'], cwd=repo, check=
 root = args.directory.resolve() / f'{args.platform}-{int(time.time())}-{uuid.uuid4().hex[:8]}'
 (root / 'plugins').mkdir(parents=True)
 shutil.copy2(server_jar, root / 'server.jar')
-shutil.copy2(repo / 'build/libs/polarpaper-2.3.2.jar', root / 'plugins/polarpaper.jar')
+plugin_jars = sorted(
+    (jar for jar in (repo / 'build/libs').glob('polarpaper-*.jar') if not jar.name.endswith('-sources.jar')),
+    key=lambda jar: jar.stat().st_mtime,
+    reverse=True,
+)
+if not plugin_jars:
+    raise SystemExit('No built polarpaper jar found; run ./gradlew build first')
+shutil.copy2(plugin_jars[0], root / 'plugins/polarpaper.jar')
 shutil.copy2(repo / 'build/libs' / plugin, root / 'plugins' / plugin)
 (root / 'eula.txt').write_text('eula=true\n')
 (root / 'server.properties').write_text(f'server-ip=127.0.0.1\nserver-port={25591 if args.platform == "paper" else 25592}\nonline-mode=false\nenable-status=false\n'

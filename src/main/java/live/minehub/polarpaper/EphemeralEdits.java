@@ -4,6 +4,7 @@ import live.minehub.polarpaper.canvas_26_2.CanvasEphemeralBackend;
 import live.minehub.polarpaper.core.ephemeral.*;
 import live.minehub.polarpaper.core.ephemeral.edit.*;
 import live.minehub.polarpaper.core.util.FoliaUtil;
+import live.minehub.polarpaper.core.util.TaskFutures;
 import net.minecraft.server.level.ServerLevel;
 import org.bukkit.*;
 import org.bukkit.block.data.BlockData;
@@ -31,7 +32,7 @@ final class EphemeralEdits {
         ChunkContentStore.checkNotPreparing();
         EphemeralWorlds.checkSupport();
         if (!(world.getGenerator() instanceof EphemeralGenerator generator)) throw new IllegalArgumentException("Editing requires a Polar ephemeral world");
-        if (FoliaUtil.isCanvas()) CanvasEphemeralBackend.verifyEditingSupport();
+        if (FoliaUtil.isCanvas()) CanvasEphemeralBackend.verifySupport();
         return generator.content();
     }
     static void release(UUID world) { BUDGETS.remove(world); }
@@ -222,7 +223,7 @@ final class EphemeralEdits {
         void dispatch() {
             try {
                 CompletableFuture<Boolean> dispatched = FoliaUtil.isCanvas()
-                        ? CanvasEphemeralBackend.executeOnExistingRegion(world, coordinate.x(), coordinate.z(), this::step)
+                        ? TaskFutures.runRegion(PolarPaper.getPlugin(), world, coordinate.x(), coordinate.z(), () -> { step(); return true; })
                         : EphemeralWorlds.onMain(() -> { step(); return true; });
                 dispatched.whenComplete((ran, failure) -> {
                     if (failure != null) fail(failure);

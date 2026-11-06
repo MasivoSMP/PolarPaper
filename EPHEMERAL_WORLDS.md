@@ -1,6 +1,6 @@
 # Ephemeral worlds
 
-Targets Paper **26.1.2, 26.2 and 26.3**, plus **Canvas 26.2 with the bundled server patch**.
+Targets Paper **26.1.2, 26.2 and 26.3**, plus **Pinac 26.2 with native persistent-world support**.
 Pure Folia, stock Canvas and other versions are explicitly rejected before ephemeral creation.
 The implementation uses Paper/Moonrise internals; a future Paper change can require an adapter update.
 Live-tested on Paper **26.3 build 241**. The 26.1.2/26.2 adapters compile but have not yet been tested on live servers.
@@ -10,24 +10,27 @@ An optional pure content provider or explicit publication can supply its first-g
 It keeps generated content in RAM until your plugin explicitly destroys it. There is no automatic
 discard option and no force-unload option. Ordinary Polar worlds are unchanged.
 
-### Canvas: patched server required
+### Pinac: native persistent worlds
 
-Install `server-patches/canvas-26.2-ephemeral.patch` against Canvas commit
-`a631d9d7f16e2ea127cb731a31775206877038be` (build 994-stable); see `server-patches/README.md`.
-Stock Canvas forces regional saving even for `unloadWorldAsync(..., false, ...)`, including dirty
-protochunks and POI-only holders, and can log resource-close failures without failing its callback.
-The patch adds immutable no-content-IO guards and checked closure, not a temporary disk fallback.
-The plugin verifies native lifecycle contract version 1 or 2 before creating an ephemeral Canvas world;
-the editing APIs require **version 2**, included in the updated patch.
-Ordinary Canvas Polar worlds keep their existing behavior.
-Live-tested on that patched Canvas revision: **84 assertions with two regional tick threads**;
-Paper 26.3: **97 assertions**. Polar has 22 unit tests; the native patch has 11.
+Use Pinac 26.2. It exposes `WorldCreator#persistent(false)`, `World#setPersistent(false)` and
+`ServerLevel#canvas$destroyNonPersistentChunkAsync(int, int)`. Polar creates ephemeral worlds with
+`persistent(false)` before `createWorld`, so Pinac does not read or migrate existing metadata and does
+not write chunks, entities, POI or per-world saved data. The flag is independent of `setAutoSave`; the
+adapter still disables autosave as a second layer. Existing files are not deleted or rewritten.
 
-Chunk destruction is dispatched to the existing owning region using a native **ticketless** queue:
-it neither loads absent chunks nor adds a scheduler ticket that would block its own unload. Native
-queues migrate tasks on split/merge and retire them when a region disappears. Regional destruction
-uses native unload stages and locks. Whole-world destruction uses `WorldUnloadAsyncEvent` and waits
-for the checked asynchronous shutdown callback before deregistration validation and directory cleanup.
+Stock Canvas is rejected because it lacks these APIs. The legacy
+`server-patches/canvas-26.2-ephemeral.patch` is retained only as historical reference and is not used
+by the current adapter or Pinac releases.
+
+Chunk destruction is dispatched to the existing owning region through
+`ServerLevel#canvas$destroyNonPersistentChunkAsync`, without loading absent chunks or adding a scheduler
+ticket. Pinac uses native unload stages and locks; it does not strip foreign tickets or force-remove
+entities. Whole-world destruction uses `WorldUnloadAsyncEvent` and waits for the checked asynchronous
+shutdown callback before deregistration validation and directory cleanup.
+
+Pinac validation: storage unit tests plus a disposable-server smoke test with one non-persistent and
+one persistent world. The non-persistent world produced no `.mca`, `data/` or `level.dat`; the normal
+world saved correctly. Paper 26.3 remains validated by the existing 97-assertion suite.
 
 ## Configuration
 
@@ -73,7 +76,7 @@ Polar.createEphemeralWorld("dungeon-instance", config).thenAccept(world -> {
 ```
 
 Creation and destruction return futures; do not block the server thread with `join()`/`get()`.
-Paper lifecycle work runs on its main thread. Canvas creation/world coordination runs globally and
+Paper lifecycle work runs on its main thread. Pinac creation/world coordination runs globally and
 chunk destruction runs on the owning region; completion callbacks need not run globally.
 Plugins remain responsible for scheduling their
 own generation, block changes and teleports. Cancelling a returned future does **not** cancel the
@@ -196,10 +199,10 @@ entire floor's RAM. The same load policies, queue limits and budgets apply.
 
 Use `Polar.destroyWorld(world)`, not `Bukkit.unloadWorld`: unchecked external unloads are cancelled.
 Remove all players first. World destruction closes new chunk requests, waits for already-scheduled chunk
-operations, respects the cancellable `WorldUnloadEvent` (Canvas: `WorldUnloadAsyncEvent`), closes native chunk/IO resources without saving,
+operations, respects the cancellable `WorldUnloadEvent` (Pinac: `WorldUnloadAsyncEvent`), closes native chunk/IO resources without saving,
 deregisters the world, then deletes only that instance's owned directory. Failure is exceptional; a
 failed destruction keeps the world closed to new chunk requests. Cancelled unloads and failed folder
-cleanup can be retried with the same World. A partially failed **native Canvas shutdown** cannot safely
+cleanup can be retried with the same World. A partially failed **native Pinac shutdown** cannot safely
 be retried: the server reports `FAIL_RESOURCE_CLOSE`, retains its unloading state and initiates shutdown.
 Polar refuses a second native unload and leaves the directory/manifest untouched.
 
@@ -240,12 +243,12 @@ For reproducible disposable-server runs (Python 3 and Java 25):
 
 ```sh
 python3 src/integrationTest/run-server.py --platform paper --server-jar /path/to/paper.jar --accept-eula
-python3 src/integrationTest/run-server.py --platform canvas --server-jar /path/to/patched-canvas.jar --accept-eula
+python3 src/integrationTest/run-server.py --platform canvas --server-jar /path/to/pinac.jar --accept-eula
 ```
 
 `--accept-eula` is an explicit acceptance of the Minecraft EULA for the disposable server. Each run
 uses a fresh directory under `/tmp/opencode/polar-integration`, binds loopback in offline mode, and
-stops the server. Canvas uses **two regional tick threads** and tests two distant floors, ticket
+stops the server. Pinac uses **two regional tick threads** and tests two distant floors, ticket
 blockers, partial results, absent coordinates, void revisit, weak references, cancelled/unchecked
 async unloads, cleanup retry and pending-operation draining. Never install either test jar in production.
 
