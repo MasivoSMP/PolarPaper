@@ -14,6 +14,7 @@ import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.craftbukkit.entity.CraftEntity;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -76,11 +77,23 @@ final class EphemeralEdits {
         } catch (Throwable error) { return CompletableFuture.failedFuture(error); }
     }
     static CompletableFuture<GenerateChunkResult> generate(World world, int x, int z) {
+        return generate(world, x, z, null);
+    }
+    static CompletableFuture<GenerateChunkResult> generate(World world, int x, int z, Plugin ticketOwner) {
         try {
             var store = store(world); ChunkCoordinates c = new ChunkCoordinates(x, z); coordinate(c);
             return EphemeralWorlds.edit(world, c, 0, () -> {
                 if (!store.hasPublication(c)) return CompletableFuture.completedFuture(GenerateChunkResult.NOT_PUBLISHED);
-                return world.getChunkAtAsync(x, z, true).thenCompose(chunk -> live.minehub.polarpaper.core.util.TaskFutures.runRegion(PolarPaper.getPlugin(), world, x, z, () -> {
+                CompletableFuture<Void> retained = ticketOwner == null ? CompletableFuture.completedFuture(null)
+                        : TaskFutures.runRegion(PolarPaper.getPlugin(), world, x, z, () -> {
+                            if (!ticketOwner.isEnabled()) throw new IllegalStateException("Ticket owner is not enabled");
+                            if (!world.addPluginChunkTicket(x, z, ticketOwner)) throw new IllegalStateException("Plugin already owns a ticket for " + x + "," + z);
+                            return null;
+                        });
+                return retained.thenCompose(ignored -> ticketOwner == null
+                                ? world.getChunkAtAsync(x, z, true)
+                                : EphemeralWorlds.onMain(() -> world.getChunkAtAsync(x, z, true)).thenCompose(future -> future))
+                        .thenCompose(chunk -> TaskFutures.runRegion(PolarPaper.getPlugin(), world, x, z, () -> {
                     if (chunk == null) throw new IllegalStateException("Server returned no generated chunk");
                     store.checkRestoration();
                     store.discard(c); return GenerateChunkResult.GENERATED;

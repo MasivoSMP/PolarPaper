@@ -25,6 +25,7 @@ import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.entity.Player;
 import org.bukkit.event.world.WorldLoadEvent;
+import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
@@ -64,6 +65,14 @@ public class Polar {
     public static CompletableFuture<PublishChunksResult> publishChunks(World world, Map<ChunkCoordinates, PreparedChunk> content) { return EphemeralEdits.publish(world, content); }
     /** Separate from publication: completes after the native FULL chunk request. */
     public static CompletableFuture<GenerateChunkResult> generatePublishedChunk(World world, int x, int z) { return EphemeralEdits.generate(world, x, z); }
+    /**
+     * Generates a published chunk while holding a plugin ticket from before its first load.
+     * The ticket remains owned by {@code ticketOwner} after completion, including generation
+     * failures after acquisition, and must be removed by that plugin when it retires the chunk.
+     */
+    public static CompletableFuture<GenerateChunkResult> generatePublishedChunk(World world, int x, int z, Plugin ticketOwner) {
+        return EphemeralEdits.generate(world, x, z, java.util.Objects.requireNonNull(ticketOwner, "ticketOwner"));
+    }
     public static CompletableFuture<DiscardPublicationResult> discardPublishedChunk(World world, int x, int z) { return EphemeralEdits.discard(world, x, z); }
     public static CompletableFuture<PatchChunkResult> patchChunk(World world, int x, int z, ChunkPatch patch, PatchOptions options) { return EphemeralEdits.patch(world, x, z, patch, options); }
     public static CompletableFuture<PatchChunksResult> patchChunks(World world, Map<ChunkCoordinates, ChunkPatch> patches, PatchOptions options) { return EphemeralEdits.patches(world, patches, options); }
