@@ -5,21 +5,27 @@ import live.minehub.polarpaper.core.config.Config;
 import live.minehub.polarpaper.core.ephemeral.*;
 import live.minehub.polarpaper.core.ephemeral.edit.*;
 import net.minecraft.core.BlockPos;
+import net.minecraft.nbt.*;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.material.Fluids;
 import org.bukkit.*;
 import org.bukkit.block.Chest;
 import org.bukkit.block.data.Directional;
 import org.bukkit.craftbukkit.CraftWorld;
+import org.bukkit.event.*;
+import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.entity.ArmorStand;
 import org.bukkit.entity.Entity;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.*;
 import java.lang.ref.WeakReference;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Shared real-server assertions. RegionScheduler is only used by this fixture on explicitly generated chunks. */
 final class EditingIntegration {
@@ -38,7 +44,7 @@ final class EditingIntegration {
             return PreparedChunk.builder(context.minY(), context.maxY()).setBlock(0, 64, 0, "minecraft:iron_block").fillBiome("minecraft:forest").build();
         };
         return Polar.createEphemeralWorld("integration_edits", config, provider, new ChunkEditingOptions(2, 8L * 1024 * 1024, 16, 64))
-                .thenCompose(world -> publications(world).thenCompose(ignored -> patches(world))
+                .thenCompose(world -> publications(world).thenCompose(ignored -> retainedGeneration(world)).thenCompose(ignored -> patches(world))
                     .thenCompose(ignored -> patterns(world)).thenCompose(ignored -> cleanup(world))
                     .thenCompose(ignored -> providerAndRaces(world)).thenCompose(ignored -> collectPayload(0))
                     .thenCompose(ignored -> closing(world)))
@@ -84,6 +90,53 @@ final class EditingIntegration {
             return Polar.generatePublishedChunk(world, 6000, 6000);
         }).thenAccept(result -> check(result == GenerateChunkResult.NOT_PUBLISHED, "destroyed publication cannot resurrect"));
     }
+    private CompletableFuture<Void> retainedGeneration(World world) {
+        final int chunkX = 2500, chunkZ = 2501;
+        final int blockX = chunkX * 16, blockZ = chunkZ * 16;
+        CompoundTag nbt = new CompoundTag();
+        nbt.putString("id", "minecraft:chest"); nbt.putInt("x", 0); nbt.putInt("y", 64); nbt.putInt("z", 0);
+        CompoundTag item = new CompoundTag(); item.putByte("Slot", (byte) 0); item.putString("id", "minecraft:diamond"); item.putInt("count", 7);
+        ListTag items = new ListTag(); items.add(item); nbt.put("Items", items);
+        byte[] encoded;
+        try { ByteArrayOutputStream bytes = new ByteArrayOutputStream(); NbtIo.write(nbt, new DataOutputStream(bytes)); encoded = bytes.toByteArray(); }
+        catch (IOException error) { return CompletableFuture.failedFuture(error); }
+        PreparedChunk prepared = PreparedChunk.builder(world.getMinHeight(), world.getMaxHeight())
+                .setBlock(0, 64, 0, "minecraft:chest[facing=north,type=single,waterlogged=false]")
+                .blockEntity(new PreparedBlockEntity(0, 64, 0, "minecraft:chest", encoded)).build();
+        AtomicBoolean unloadAttempted = new AtomicBoolean();
+        AtomicReference<Throwable> unloadFailure = new AtomicReference<>();
+        Listener unloadProbe = new Listener() {
+            @EventHandler(priority = EventPriority.LOWEST)
+            public void onChunkLoad(ChunkLoadEvent event) {
+                if (event.getWorld() != world || event.getChunk().getX() != chunkX || event.getChunk().getZ() != chunkZ) return;
+                unloadAttempted.set(true);
+                try { event.getWorld().unloadChunkRequest(chunkX, chunkZ); }
+                catch (Throwable failure) { unloadFailure.set(failure); }
+            }
+        };
+        Bukkit.getPluginManager().registerEvents(unloadProbe, plugin);
+        CompletableFuture<Void> operation = Polar.publishChunk(world, chunkX, chunkZ, prepared).thenCompose(published -> {
+            check(published == PublishChunkResult.PUBLISHED, "ticketed generation publication accepted");
+            return Polar.generatePublishedChunk(world, chunkX, chunkZ, plugin);
+        }).thenCompose(result -> {
+            check(result == GenerateChunkResult.GENERATED, "ticketed generation completes after restoration");
+            return delay(3).thenCompose(ignored -> owned(world, chunkX, chunkZ, () -> {
+                check(unloadAttempted.get(), "unload was requested during the first chunk load");
+                check(unloadFailure.get() == null, "unload probe ran on the owning region");
+                check(world.isChunkLoaded(chunkX, chunkZ), "plugin ticket prevented unload before generation returned");
+                check(world.getPluginChunkTickets(chunkX, chunkZ).contains(plugin), "generation ticket belongs to Masivo caller");
+                check(world.getPlayers().isEmpty(), "ticket retention works without players");
+                check(world.getBlockAt(blockX, 64, blockZ).getType() == Material.CHEST, "retained chunk kept its block state");
+                check(((Chest) world.getBlockAt(blockX, 64, blockZ).getState()).getBlockInventory().getItem(0).getAmount() == 7, "retained generation restored chest NBT inventory");
+                return null;
+            }));
+        }).thenCompose(ignored -> owned(world, chunkX, chunkZ, () -> {
+            check(world.removePluginChunkTicket(chunkX, chunkZ, plugin), "ticket owner releases retained chunk");
+            return null;
+        }));
+        return operation.whenComplete((ignored, failure) -> HandlerList.unregisterAll(unloadProbe));
+    }
+
     private CompletableFuture<Void> patches(World world) {
         var one = ChunkPatch.builder().setBlock(0, 70, 0, "minecraft:diamond_block").build();
         return Polar.patchChunk(world, 7000, 7000, one, PatchOptions.DEFAULT).thenCompose(result -> {

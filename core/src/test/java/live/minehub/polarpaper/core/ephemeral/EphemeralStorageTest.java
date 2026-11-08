@@ -5,11 +5,13 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.FileSystemException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Properties;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class EphemeralStorageTest {
     @TempDir Path root;
@@ -62,7 +64,7 @@ class EphemeralStorageTest {
         Path folder = root.resolve("instance");
         var properties = ownership(folder);
         Path link = root.resolve("link");
-        Files.createSymbolicLink(link, folder);
+        createSymbolicLink(link, folder);
         properties.setProperty("path", link.toString());
         assertThrows(IOException.class, () -> EphemeralStorage.cleanupRecord(record(), properties, List.of()));
         assertTrue(Files.exists(folder.resolve(".polar-ephemeral")));
@@ -72,7 +74,7 @@ class EphemeralStorageTest {
         Path folder = root.resolve("instance");
         var properties = ownership(folder);
         Path outside = Files.writeString(root.resolve("user-file"), "keep");
-        Files.createSymbolicLink(folder.resolve("link"), outside);
+        createSymbolicLink(folder.resolve("link"), outside);
         EphemeralStorage.cleanupRecord(record(), properties, List.of());
         assertEquals("keep", Files.readString(outside));
     }
@@ -85,5 +87,16 @@ class EphemeralStorageTest {
         Path record = record();
         EphemeralStorage.cleanupRecord(record, properties, List.of());
         assertFalse(Files.exists(record));
+    }
+
+    private static void createSymbolicLink(Path link, Path target) throws IOException {
+        try {
+            Files.createSymbolicLink(link, target);
+        } catch (FileSystemException ex) {
+            if (!System.getProperty("os.name").startsWith("Windows")) throw ex;
+            assumeTrue(false, "Symbolic links are unavailable: " + ex.getMessage());
+        } catch (UnsupportedOperationException ex) {
+            assumeTrue(false, "Symbolic links are unsupported: " + ex.getMessage());
+        }
     }
 }

@@ -1,0 +1,11 @@
+name: PreparedNbtTest
+version: '1'
+main: live.minehub.polarpaper.integration.PreparedNbtIntegrationPlugin
+api-version: '26.2'
+folia-supported: true
+dependencies:
+  server:
+    polarpaper:
+      load: BEFORE
+      required: true
+      join-classpath: true
